@@ -1,0 +1,21 @@
+# 作業報告
+
+- タスクID: BUG-001
+- 正式名称 / UI表示名: tester / tester
+- 担当役割: 独立試験
+- ステータス: 条件付き完了
+- 参照した親タスク: `coordination/tasks/BUG-001/task.md`
+- 参照した作業指示: `coordination/tasks/BUG-001/tester.md`
+- 実施内容: 修正コードの静的確認、構文確認、差戻し後の再確認、URL単体試験、実DOM観測を受けたサイドバー候補選択の再確認。
+- 確認したファイル: `extension/content.js`、`extension/background.js`、`extension/frame.js`、`extension/manifest.json`、`extension/README.md`
+- 作成・変更したファイル: 本報告のみ。
+- 実行したコマンド: `node --check extension/content.js`、`node --check extension/background.js`、`node --check extension/frame.js`、Manifest読取、PowerShell here-stringからNode VMへ`conversationUrl`関数を渡した7ケースの単体試験。最初のURL単体試験はPowerShell/Nodeの引用符処理で失敗し、合格数に含めない。
+- 確認・試験内容: 通常URL `/c/<id>`、プロジェクトURL `/g/<id>/c/<id>`、外部/クエリ/ハッシュURL拒否、ネイティブD&D、pointer fallback、対象ペイン限定、クリック/スクロール回帰をコードで確認。
+- 確認・試験結果: 3つのJavaScript構文チェック成功。URL単体試験7/7成功（通常、プロジェクト、外部、query、hash、余分なpathを含む）。ManifestはMV3、0.3.1。drop時は対象 `frame.src` のみ変更するコード。8px未満では pointerDrag が active にならず通常クリックを通す。差戻し後は8pxを超えた後にpointer captureを取得し、pointerup後に同じリンクのclickを最大500ms捕捉して遷移を抑止する。native drop後のハイライトも`clearDrag`で解除する。サイドバー選択は左端/幅/高さ条件で候補を絞り、`nav`または`aside`を優先する実装。統合管理が既存BraveのChatGPTページで同等ロジックを読み取り実行し、選択NAV（x=0、幅260、高さ835）が「スクワット記録」リンクを包含したと報告。拡張再読込後のD&D成功は未確認。
+- 完了条件の達成状況: 静的確認は一部達成。実際のChatGPT UIでのドロップ、クリック、スクロール、ペイン限定切替は未確認。
+- 発見した問題: 初回確認で見つけたドラッグ後のclick遷移リスクは差戻し修正で対処済み。静的確認で新たな確定不具合なし。
+- 未解決事項: ネイティブdragstartとpointer fallbackの同時発火時挙動、ChatGPT実DOMのポインターイベント、iframe上のドロップ実動作。既存Braveタブでは「スクワット記録」は通常の`/c/<id>`リンクであり、今回のサイドバー候補にも含まれるが、ユーザーの失敗が解決した証拠ではない。pointer fallbackの実機確認が重要。
+- 推測・仮定: プロジェクト会話URLは `/g/<id>/c/<id>` と仮定。実URL未取得。
+- 統合管理に判断を求める事項: 実機でのpointer fallbackの成否を未確認としてユーザーに再試験を依頼すること。
+- 次工程への引継ぎ: 修正後、ユーザー実機で通常会話/プロジェクト会話を画面2へ配置し、元ページが遷移しないことを確認する。
+- 作業完了日時: 2026-09-25 JST

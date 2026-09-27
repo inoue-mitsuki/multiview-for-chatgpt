@@ -11,7 +11,6 @@ function conversationUrl(value) {
 
 function registerMenus() {
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: "chatgpt-split-diagnostics", title: "分割ビューの診断を表示", contexts: ["action"] });
     for (let index = 0; index < 4; index++) {
       chrome.contextMenus.create({
         id: menuPrefix + (index + 1),
@@ -28,29 +27,14 @@ chrome.runtime.onInstalled.addListener(registerMenus);
 chrome.runtime.onStartup.addListener(registerMenus);
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  if (info.menuItemId === "chatgpt-split-diagnostics" && tab?.id) {
-    try {
-      const result = await chrome.tabs.sendMessage(tab.id, { type: "show-split-diagnostics" });
-      if (!result?.shown) throw new Error("診断対応コードが読み込まれていません");
-    } catch {
-      await chrome.action.setBadgeText({ tabId: tab.id, text: "再読込" });
-      await chrome.action.setTitle({ tabId: tab.id, title: "ChatGPTタブを再読み込みしてから診断を開いてください" });
-    }
-    return;
-  }
   if (!String(info.menuItemId).startsWith(menuPrefix) || !tab?.id) return;
   const pane = Number(String(info.menuItemId).slice(menuPrefix.length));
-  let url;
-  try {
-    const parsed = new URL(info.linkUrl);
-    if (parsed.origin !== origin || parsed.username || parsed.password) return;
-    url = parsed.href;
-  } catch { return; }
+  const url = conversationUrl(info.linkUrl);
   if (!Number.isInteger(pane) || pane < 1 || pane > 4 || !url ||
       !info.pageUrl?.startsWith(origin + "/") || !tab.url?.startsWith(origin + "/")) return;
   try {
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
-    await chrome.tabs.sendMessage(tab.id, { type: conversationUrl(url) ? "assign-conversation" : "assign-page", url, pane, pageUrl: tab.url });
+    await chrome.tabs.sendMessage(tab.id, { type: "assign-conversation", url, pane, pageUrl: tab.url });
   } catch {
     await chrome.action.setBadgeBackgroundColor({ tabId: tab.id, color: "#b91c1c" });
     await chrome.action.setBadgeText({ tabId: tab.id, text: "!" });

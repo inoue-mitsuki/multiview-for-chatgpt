@@ -1,0 +1,21 @@
+# 作業報告
+
+- タスクID: FEATURE-004
+- 正式名称 / UI表示名: tester / tester
+- 担当役割: 独立試験
+- ステータス: 条件付き完了
+- 参照した親タスク: `coordination/tasks/FEATURE-004/task.md`
+- 参照した作業指示: `coordination/tasks/FEATURE-004/tester.md`
+- 実施内容: 背景スクリプトのモック試験、全JavaScript構文確認、表示先割当とレイアウトの静的確認。
+- 確認したファイル: `extension/background.js`、`extension/content.js`、`extension/frame.js`、`extension/manifest.json`、`extension/README.md`。
+- 作成・変更したファイル: 本報告のみ。
+- 実行したコマンド: PowerShell here-stringからNode VMで`background.js`を実行しChrome APIをモックした試験、`node --check extension/background.js`、`node --check extension/content.js`、`node --check extension/frame.js`。
+- 確認・試験内容: メニュー4項目、通常/プロジェクト会話URL、外部・query・hash付きURL拒否、指定ペインへのメッセージ、未起動時起動、非表示ペイン表示、既存ペイン維持、D&D削除。
+- 確認・試験結果: モックで4メニュー生成、通常URLの画面2送信、プロジェクトURLの画面4送信、外部/query/hash付きURL3件拒否が成功。全JavaScript構文確認成功。`assignConversation`は未起動時`start(pageUrl)`後に割当、指定番号が現表示数を超える時のみ`setCount`、指定`iframe.src`のみ更新する実装。2/3/4ボタンと終了処理は維持。D&Dのイベント処理は`content.js`から削除。実ブラウザでの右クリック・ペイン表示試験は未実施。
+- 完了条件の達成状況: 静的・モック確認は達成。Braveでの実操作は未確認のため条件付き。
+- 発見した問題: 静的・モック範囲では確定不具合なし。
+- 未解決事項: Brave右クリックメニュー表示、ChatGPT実リンクでの`info.linkUrl`、未起動からの画面2割当、非表示画面4への割当、ChatGPT iframeロード結果は未確認。
+- 推測・仮定: ブラウザの`info.linkUrl`が右クリックしたChatGPT会話リンクURLを返すことはAPIの想定であり、実機では未確認。
+- 統合管理に判断を求める事項: まずユーザー実機で「スクワット記録」右クリック→画面2で開くを確認する。
+- 次工程への引継ぎ: 拡張の再読み込みとChatGPTタブ更新後、右クリックメニュー表示、画面2のみ切替、通常クリック、2/3/4切替、終了を検証する。
+- 作業完了日時: 2026-09-25 JST
