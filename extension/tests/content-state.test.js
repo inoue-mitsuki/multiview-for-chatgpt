@@ -582,7 +582,7 @@ actualLibrary.message({ type: "show-split-diagnostics" });
 const diagnosticDialog = actualLibrary.document.body.descendants().find(item => item.id === "chatgpt-split-diagnostics");
 assert.ok(diagnosticDialog);
 const diagnosticData = JSON.parse(diagnosticDialog.children[1].textContent);
-assert.equal(diagnosticData.version, "0.22.0");
+assert.equal(diagnosticData.version, "0.22.2");
 assert.equal(diagnosticDialog.children[1].textContent.includes("https://"), false);
 diagnosticDialog.children[0].listeners.get("click")();
 actualLibrary.close();

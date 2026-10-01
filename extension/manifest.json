@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT 分割ビュー（実験用）",
-  "version": "0.22.0",
+  "version": "0.22.2",
   "description": "ChatGPTの標準サイドバーを残し、右側に2～4画面を表示します。",
   "permissions": ["storage", "activeTab", "scripting", "contextMenus"],
   "action": { "default_title": "ChatGPTを分割表示" },

@@ -1360,7 +1360,7 @@
     dialog.setAttribute("role", "dialog");
     dialog.setAttribute("aria-label", "分割ビュー診断");
     dialog.style.cssText = "position:fixed;inset:10% 15%;z-index:2147483647;background:#222;color:#fff;padding:20px;border:1px solid #888;border-radius:12px;overflow:auto;font:13px monospace";
-    const data = { version: "0.22.0", splitActive: !!host, sidebarRoots: sidebarRoots().length, registeredStandardItems: generalButtons.size, panes: panes.map((pane, index) => {
+    const data = { version: "0.22.2", splitActive: !!host, sidebarRoots: sidebarRoots().length, registeredStandardItems: generalButtons.size, panes: panes.map((pane, index) => {
       const frame = pane.querySelector("iframe");
       try {
         const doc = frame.contentDocument;
