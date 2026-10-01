@@ -357,15 +357,16 @@
     const generalEntries = new Set([...links, ...roots.flatMap(root => [...root.querySelectorAll("[data-sidebar-destination], button.sidebar-item")])]);
     updateGeneralButtons(generalEntries);
     for (const entry of standardSelectionMarks) {
-      if (!generalEntries.has(entry) || !standardRoute(entry)) {
+      if (!generalEntries.has(entry) || (!standardRoute(entry) && !conversationIdentity(entry.href))) {
         entry.removeAttribute("data-chatgpt-split-selected");
         standardSelectionMarks.delete(entry);
       }
     }
     for (const entry of generalEntries) {
       const route = standardRoute(entry);
-      if (!route) continue;
-      const selected = String(standardRouteMatches(paneUrl(panes[0]), route));
+      const conversation = conversationIdentity(entry.href);
+      if (!route && !conversation) continue;
+      const selected = String(conversation ? open.has(conversation) : standardRouteMatches(paneUrl(panes[0]), route));
       if (entry.getAttribute("data-chatgpt-split-selected") !== selected) entry.setAttribute("data-chatgpt-split-selected", selected);
       standardSelectionMarks.add(entry);
     }
@@ -1084,6 +1085,8 @@
     indicatorStyle = document.createElement("style");
     indicatorStyle.textContent = "a[data-chatgpt-split-pane] { background-color: rgba(90, 160, 255, .20) !important; border-radius: 8px; } " +
       "[data-chatgpt-split-selected='false'] { background-color: transparent !important; background-image: none !important; } " +
+      ".sidebar-item[role='group']:has(a[data-chatgpt-split-selected]) { background-color: transparent !important; background-image: none !important; } " +
+      ".sidebar-item[role='group']:has(a[data-chatgpt-split-selected='false']):hover, .sidebar-item[role='group']:has(a[data-chatgpt-split-selected='false']):focus-within { background-color: rgba(255,255,255,.08) !important; } " +
       "[data-chatgpt-split-selected='false']:hover, [data-chatgpt-split-selected='false']:focus-visible { background-color: rgba(255,255,255,.08) !important; } " +
       "[data-chatgpt-split-selected='true'] { background-color: rgba(90,160,255,.20) !important; background-image: none !important; border-radius: 8px; } " +
       "a[data-chatgpt-split-pane]::before { content: attr(data-chatgpt-split-pane); display: inline-grid; place-items: center; flex: 0 0 17px; width: 17px; min-width: 17px; max-width: 17px; align-self: flex-start; justify-self: start; height: 17px; margin-right: 5px; vertical-align: middle; border-radius: 50%; background: #9bc9ff; color: #10243e; font: 700 10px/1 sans-serif; } " +
@@ -1360,7 +1363,7 @@
     dialog.setAttribute("role", "dialog");
     dialog.setAttribute("aria-label", "分割ビュー診断");
     dialog.style.cssText = "position:fixed;inset:10% 15%;z-index:2147483647;background:#222;color:#fff;padding:20px;border:1px solid #888;border-radius:12px;overflow:auto;font:13px monospace";
-    const data = { version: "0.22.2", splitActive: !!host, sidebarRoots: sidebarRoots().length, registeredStandardItems: generalButtons.size, panes: panes.map((pane, index) => {
+    const data = { version: "0.22.5", splitActive: !!host, sidebarRoots: sidebarRoots().length, registeredStandardItems: generalButtons.size, panes: panes.map((pane, index) => {
       const frame = pane.querySelector("iframe");
       try {
         const doc = frame.contentDocument;

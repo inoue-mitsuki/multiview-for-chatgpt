@@ -582,7 +582,7 @@ actualLibrary.message({ type: "show-split-diagnostics" });
 const diagnosticDialog = actualLibrary.document.body.descendants().find(item => item.id === "chatgpt-split-diagnostics");
 assert.ok(diagnosticDialog);
 const diagnosticData = JSON.parse(diagnosticDialog.children[1].textContent);
-assert.equal(diagnosticData.version, "0.22.2");
+assert.equal(diagnosticData.version, "0.22.5");
 assert.equal(diagnosticDialog.children[1].textContent.includes("https://"), false);
 diagnosticDialog.children[0].listeners.get("click")();
 actualLibrary.close();
@@ -620,6 +620,52 @@ assert.equal(selectedScheduleItem.getAttribute("data-chatgpt-split-selected"), "
 pluginsPage.close();
 assert.equal(pluginsItem.getAttribute("data-chatgpt-split-selected"), null, "分割終了時に選択色の上書きを解除する");
 assert.equal(selectedScheduleItem.getAttribute("data-chatgpt-split-selected"), null);
+
+{
+const parentSelection = page("https://chatgpt.com/c/background-thread");
+const nav = parentSelection.document.createElement("nav");
+const backgroundLink = parentSelection.document.createElement("a");
+backgroundLink.href = "https://chatgpt.com/c/background-thread";
+backgroundLink.setAttribute("data-interactive-row-link", "true");
+backgroundLink.setAttribute("aria-current", "page");
+const backgroundRow = parentSelection.document.createElement("div");
+backgroundRow.className = "sidebar-item bg-primary-ghost-hover";
+backgroundRow.setAttribute("role", "group");
+backgroundRow.setAttribute("aria-current", "page");
+const rowContent = parentSelection.document.createElement("div");
+const rowInner = parentSelection.document.createElement("div");
+rowInner.append(backgroundLink);
+rowContent.append(rowInner);
+backgroundRow.append(rowContent);
+const assignedLink = parentSelection.document.createElement("a");
+assignedLink.href = "https://chatgpt.com/g/project/c/visible-thread";
+nav.append(backgroundRow, assignedLink);
+parentSelection.document.body.append(nav);
+parentSelection.message({ type: "toggle-four-view", url: backgroundLink.href });
+parentSelection.flush();
+assert.equal(backgroundLink.getAttribute("data-chatgpt-split-selected"), "true");
+parentSelection.message({ type: "assign-conversation", url: "https://chatgpt.com/c/visible-thread", pane: 1 });
+parentSelection.flush();
+assert.equal(backgroundLink.getAttribute("data-chatgpt-split-selected"), "false", "親タブURLだけに残る会話の標準選択色を解除する");
+const indicatorCss = parentSelection.document.head.children.find(item => item.tagName === "style" && item.textContent?.includes("data-chatgpt-split-selected")).textContent;
+const rowSelector = ".sidebar-item[role='group']:has(a[data-chatgpt-split-selected='false'])";
+assert.ok(indicatorCss.includes(".sidebar-item[role='group']:has(a[data-chatgpt-split-selected]) { background-color: transparent !important; background-image: none !important; }"), "未割当・表示中の両方で親sidebar行の背景を解除し青との重なりを防ぐ");
+assert.ok(indicatorCss.includes(rowSelector + ":hover, " + rowSelector + ":focus-within { background-color: rgba(255,255,255,.08) !important; }"), "親行のhoverとキーボード操作時の反応を維持する");
+assert.equal(backgroundRow.getAttribute("aria-current"), "page", "ChatGPT標準の現在項目属性を変更しない");
+assert.equal(backgroundLink.getAttribute("aria-current"), "page");
+assert.equal(backgroundRow.className, "sidebar-item bg-primary-ghost-hover", "ChatGPT標準クラスを変更しない");
+assert.equal(assignedLink.getAttribute("data-chatgpt-split-selected"), "true", "プロジェクトURLでも表示中の同じ会話を選択する");
+parentSelection.message({ type: "assign-conversation", url: assignedLink.href, pane: 2 });
+parentSelection.flush();
+assert.equal(assignedLink.getAttribute("data-chatgpt-split-selected"), "true", "画面2へ移動しても表示中の会話色を維持する");
+assignedLink.href = "https://chatgpt.com/library";
+parentSelection.tick();
+parentSelection.flush();
+assert.equal(assignedLink.getAttribute("data-chatgpt-split-selected"), null, "会話でなくなったリンクの選択上書きを解除する");
+parentSelection.close();
+assert.equal(backgroundLink.getAttribute("data-chatgpt-split-selected"), null, "終了時はChatGPT標準の選択表示へ戻す");
+assert.equal(backgroundRow.getAttribute("aria-current"), "page");
+}
 
 {
 const projectMove = page("https://chatgpt.com/c/shared-thread");
