@@ -1,6 +1,7 @@
 (() => {
   if (window.top === window || location.origin !== "https://chatgpt.com" ||
-      !window.frameElement?.hasAttribute("data-chatgpt-split-frame")) return;
+      (window.frameElement && !window.frameElement.hasAttribute("data-chatgpt-split-frame"))) return;
+  const isSplitFrame = () => window.frameElement?.hasAttribute("data-chatgpt-split-frame");
   const hidden = new WeakSet();
   function suitable(side) {
     if (!side || side.closest("main, [role='main']")) return false;
@@ -10,6 +11,7 @@
       rect.height >= innerHeight * .5;
   }
   function hideSidebar() {
+    if (!isSplitFrame()) return;
     const candidates = [...document.querySelectorAll('aside, nav, [data-testid*="sidebar"], [class*="sidebar"]')]
       .filter(suitable);
     candidates.forEach(side => {
@@ -20,9 +22,9 @@
   }
   hideSidebar();
   const observer = new MutationObserver(hideSidebar);
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  observer.observe(document, { childList: true, subtree: true });
   window.addEventListener("message", event => {
-    if (event.source !== window.parent || event.origin !== "https://chatgpt.com" || event.data?.type !== "focus-composer") return;
+    if (!isSplitFrame() || event.source !== window.parent || event.origin !== "https://chatgpt.com" || event.data?.type !== "focus-composer") return;
     const input = document.querySelector("textarea, [contenteditable='true'], #prompt-textarea");
     input?.focus();
   });
