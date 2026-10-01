@@ -96,7 +96,8 @@ function page(href, options = {}) {
     removeEventListener() {}
   };
   const location = { href: url.href, origin: url.origin, pathname: url.pathname };
-  const window = { addEventListener(type, listener) { if (type === "click") windowListeners.set(listener, type); }, removeEventListener(type, listener) { windowListeners.delete(listener); } };
+  const window = { addEventListener(type, listener) { if (type === "click") windowListeners.set(listener, type); }, removeEventListener(type, listener) { windowListeners.delete(listener); },
+    getComputedStyle: element => ({ overflowX: element.mockOverflow || "visible", overflowY: element.mockOverflow || "visible" }) };
   window.top = window;
   const context = {
     window, document, location, URL,
@@ -506,6 +507,29 @@ for (const number of [2, 3, 4]) {
 }
 assert.equal(scheduleItem.querySelector(".chatgpt-split-page-badges").getAttribute("data-numbers"), "4");
 builtinPage.close();
+
+const clippedPage = page("https://chatgpt.com/c/sidebar-scroll");
+const clippedNav = clippedPage.document.createElement("nav");
+const scrollArea = clippedPage.document.createElement("div");
+scrollArea.mockOverflow = "auto";
+scrollArea.getBoundingClientRect = () => ({ left: 0, right: 260, top: 80, bottom: 400, width: 260, height: 320 });
+const clippedItem = clippedPage.document.createElement("button");
+clippedItem.setAttribute("data-sidebar-destination", "builtin:automations");
+clippedItem.textContent = "スケジュール";
+let itemTop = 30;
+clippedItem.getBoundingClientRect = () => ({ left: 0, right: 260, top: itemTop, bottom: itemTop + 32, width: 260, height: 32 });
+scrollArea.append(clippedItem);
+clippedNav.append(scrollArea);
+clippedPage.document.body.append(clippedNav);
+clippedPage.message({ type: "toggle-four-view", url: "https://chatgpt.com/c/sidebar-scroll" });
+clippedPage.flush();
+const clippedDots = clippedPage.document.body.descendants().find(item => item.className === "chatgpt-split-general-options");
+assert.equal(clippedDots.hidden, true, "項目がサイドバーのスクロール領域外なら三点も隠す");
+itemTop = 100;
+clippedPage.mutate();
+clippedPage.flush();
+assert.equal(clippedDots.hidden, false, "項目がスクロール領域へ戻れば三点も表示する");
+clippedPage.close();
 
 const nativeAssign = page("https://chatgpt.com/c/keep-pane-one");
 const nativeNav = nativeAssign.document.createElement("nav");

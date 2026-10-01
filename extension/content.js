@@ -122,6 +122,17 @@
     menu.children[1]?.focus?.();
   }
   function updateGeneralButtons(entries) {
+    const visibleInScrollContainers = entry => {
+      const rect = entry.getBoundingClientRect();
+      if (!rect.width || !rect.height || rect.bottom <= 0 || rect.top >= innerHeight) return false;
+      for (let parent = entry.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+        const style = window.getComputedStyle?.(parent);
+        if (!style || !/(auto|scroll|hidden|clip)/.test(`${style.overflowX} ${style.overflowY}`)) continue;
+        const bounds = parent.getBoundingClientRect();
+        if (rect.bottom <= bounds.top || rect.top >= bounds.bottom || rect.right <= bounds.left || rect.left >= bounds.right) return false;
+      }
+      return true;
+    };
     for (const [entry, button] of generalButtons) {
       const url = chatgptUrl(entry.href);
       if (!entries.has(entry) || (!builtinDestination(entry) && (!url || conversationIdentity(url) || projectIdentity(url)))) { button.remove(); generalButtons.delete(entry); }
@@ -142,7 +153,7 @@
         document.body.append(button);
       }
       const rect = entry.getBoundingClientRect();
-      button.hidden = !rect.width || !rect.height || rect.bottom < 0 || rect.top > innerHeight;
+      button.hidden = !visibleInScrollContainers(entry);
       button.style.left = Math.max(0, rect.right - 28) + "px";
       button.style.top = (rect.top + Math.max(0, (rect.height - 24) / 2)) + "px";
     }
