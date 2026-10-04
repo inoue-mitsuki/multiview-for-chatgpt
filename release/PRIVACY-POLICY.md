@@ -1,7 +1,7 @@
 # プライバシーポリシー
 
 更新日: 2026年10月1日
-対象: MultiView for ChatGPT
+対象: Multiview
 
 この拡張機能は、ChatGPTを分割表示するために必要な情報を端末内で処理します。
 
