@@ -1,4 +1,4 @@
-param([string]$DisplayName = 'MultiView for ChatGPT')
+param([string]$DisplayName = 'Multiview', [string]$PackageVersion = '')
 $ErrorActionPreference = 'Stop'
 $projectDirectory = Split-Path -Parent $PSScriptRoot
 $sourceDirectory = Join-Path $projectDirectory 'extension'
@@ -8,6 +8,7 @@ $packageDirectory = Join-Path $outputDirectory 'package'
 $iconDirectory = Join-Path $packageDirectory 'icons'
 New-Item -ItemType Directory -Path $iconDirectory -Force | Out-Null
 foreach ($file in @('background.js','content.js','frame.js')) { Copy-Item -LiteralPath (Join-Path $sourceDirectory $file) -Destination $packageDirectory }
+Copy-Item -LiteralPath (Join-Path $projectDirectory 'LICENSE') -Destination $packageDirectory
 
 Add-Type -AssemblyName System.Drawing
 $iconSource = [System.Drawing.Image]::FromFile((Join-Path $projectDirectory 'release/assets/multiview-icon.png'))
@@ -24,6 +25,7 @@ foreach ($size in @(16,32,48,128)) {
 }
 $iconSource.Dispose()
 $manifest.name = $DisplayName
+if ($PackageVersion) { $manifest.version = $PackageVersion }
 $manifest | Add-Member -NotePropertyName icons -NotePropertyValue @{ '16'='icons/icon16.png'; '32'='icons/icon32.png'; '48'='icons/icon48.png'; '128'='icons/icon128.png' } -Force
 $manifest.action | Add-Member -NotePropertyName default_icon -NotePropertyValue @{ '16'='icons/icon16.png'; '32'='icons/icon32.png' } -Force
 $json = $manifest | ConvertTo-Json -Depth 20
@@ -42,7 +44,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
 try {
     $entries = @($archive.Entries.FullName)
-    if ($entries -notcontains 'manifest.json' -or $entries.Count -ne 8) { throw 'ZIP構成が不正です' }
+    if ($entries -notcontains 'manifest.json' -or $entries -notcontains 'LICENSE' -or $entries.Count -ne 9) { throw 'ZIP構成が不正です' }
 } finally { $archive.Dispose() }
 Get-FileHash -LiteralPath $zip -Algorithm SHA256 | Format-List
 Write-Output "配布候補（未申請）: $zip"
