@@ -68,8 +68,21 @@ chrome.action.onClicked.addListener(async (tab) => {
     return;
   }
   try {
+    let alive;
+    try { alive = await chrome.tabs.sendMessage(tabId, { type: "controller-alive" }); } catch {}
+    if (alive !== undefined && (alive?.alive !== true || typeof alive?.version !== "string")) throw new Error("controller応答が不正です");
+    if (alive === undefined) {
+      await chrome.scripting.executeScript({ target: { tabId }, func: () => { globalThis.__chatgptSplitInstalled = null; } });
+    }
     await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
-    await chrome.tabs.sendMessage(tabId, { type: "toggle-four-view", url });
+    const recovery = await chrome.tabs.sendMessage(tabId, { type: "recover-split-controller" });
+    if (typeof recovery?.legacy !== "boolean" || typeof recovery?.recovered !== "boolean" || typeof recovery?.version !== "string") throw new Error("復旧状態を確認できませんでした");
+    if (recovery?.legacy) {
+      await chrome.action.setBadgeText({ tabId, text: "要移行" });
+      await chrome.action.setTitle({ tabId, title: "旧版の分割画面を保護しました。未送信入力を送信・退避してからChatGPTタブを手動で再読み込みしてください" });
+      return;
+    }
+    if (!recovery?.recovered) await chrome.tabs.sendMessage(tabId, { type: "toggle-four-view", url });
     await chrome.action.setBadgeText({ tabId, text: "" });
     await chrome.action.setTitle({ tabId, title: "ChatGPTを分割表示" });
   } catch {

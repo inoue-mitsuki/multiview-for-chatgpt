@@ -5,6 +5,13 @@ const vm = require("node:vm");
 
 const extension = path.join(__dirname, "..");
 const manifest = JSON.parse(fs.readFileSync(path.join(extension, "manifest.json"), "utf8"));
+for (const size of [16, 32, 48, 128]) {
+  assert.equal(manifest.icons[String(size)], `icons/icon${size}.png`, "直接読み込む開発版にも専用アイコンを指定する");
+  assert.ok(fs.existsSync(path.join(extension, manifest.icons[String(size)])), "manifestのアイコン参照先が存在する");
+}
+for (const size of [16, 32]) {
+  assert.equal(manifest.action.default_icon[String(size)], manifest.icons[String(size)], "ツールバーにも専用アイコンを指定する");
+}
 const frameScript = manifest.content_scripts.find(entry => entry.js.includes("frame.js"));
 assert.equal(frameScript.run_at, "document_start", "画面内サイドバーを描画前から監視する");
 assert.equal(frameScript.all_frames, true);
@@ -12,16 +19,26 @@ assert.equal(frameScript.all_frames, true);
 let sideVisible = false;
 let onMutation;
 let observed;
+let observedOptions;
+let resize;
+let display = "";
+let displayPriority = "";
+let hideWrites = 0;
 const side = {
   closest: () => null,
   getBoundingClientRect: () => ({ left: 0, right: 260, top: 0, width: 260, height: 800 }),
-  style: { setProperty(name, value, priority) { assert.equal(name, "display"); assert.equal(value, "none"); assert.equal(priority, "important"); sideVisible = false; } }
+  style: {
+    getPropertyValue: () => display,
+    getPropertyPriority: () => displayPriority,
+    setProperty(name, value, priority) { assert.equal(name, "display"); assert.equal(value, "none"); assert.equal(priority, "important"); display = value; displayPriority = priority; hideWrites++; sideVisible = false; }
+  }
 };
-const document = { querySelectorAll: () => sideVisible ? [side] : [], querySelector: () => null };
-const window = { top: {}, frameElement: null, addEventListener() {} };
+const mainNav = { closest: () => ({}), getBoundingClientRect() { throw new Error("main内のnavの寸法は検査しない"); } };
+const document = { querySelectorAll: () => [side, mainNav], querySelector: () => null };
+const window = { top: {}, frameElement: null, addEventListener(type, callback) { if (type === "resize") resize = callback; } };
 vm.runInNewContext(fs.readFileSync(path.join(extension, "frame.js"), "utf8"), {
   window, document, location: { origin: "https://chatgpt.com" }, innerWidth: 1200, innerHeight: 800,
-  MutationObserver: class { constructor(callback) { onMutation = callback; } observe(target) { observed = target; } }
+  MutationObserver: class { constructor(callback) { onMutation = callback; } observe(target, options) { observed = target; observedOptions = options; } }
 });
 assert.equal(observed, document, "DOMが未生成のdocument_startでも監視を開始する");
 sideVisible = true;
@@ -30,3 +47,71 @@ assert.equal(sideVisible, true, "frameElementが未確定なら別フレーム�
 window.frameElement = { hasAttribute: () => true };
 onMutation();
 assert.equal(sideVisible, false, "サイドバーの挿入直後に隠す");
+assert.equal(observedOptions.attributes, true, "再描画によるstyle/class変更も監視する");
+assert.deepEqual(Array.from(observedOptions.attributeFilter), ["style", "class"]);
+onMutation();
+assert.equal(hideWrites, 1, "自身のstyle更新通知では再書き込みしない");
+display = "block";
+displayPriority = "";
+sideVisible = true;
+side.getBoundingClientRect = () => ({ left: 0, top: 0, width: 260, height: 800 });
+onMutation();
+assert.equal(sideVisible, false, "React再描画で認識済みsidebarのstyleが戻っても再び隠す");
+assert.equal(hideWrites, 2);
+displayPriority = "";
+onMutation();
+assert.equal(displayPriority, "important", "display:noneの優先度だけ失われても復旧する");
+assert.equal(typeof resize, "function", "画面サイズの変更後にも再検査する");
+display = "flex";
+sideVisible = true;
+resize();
+assert.equal(sideVisible, false);
+onMutation();
+assert.equal(hideWrites, 4, "復旧後のmutationでループしない");
+
+let topMutated = false;
+const topWindow = { addEventListener() { topMutated = true; } };
+topWindow.top = topWindow;
+vm.runInNewContext(fs.readFileSync(path.join(extension, "frame.js"), "utf8"), {
+  window: topWindow, location: { origin: "https://chatgpt.com" },
+  document: { querySelectorAll() { topMutated = true; return []; } },
+  MutationObserver: class { constructor() { topMutated = true; } }
+});
+assert.equal(topMutated, false, "トップフレームの標準sidebarは一切変更しない");
+
+function shellSidebarFixture(split = true, inMain = false) {
+  const writes = [];
+  function element(name) {
+    const values = new Map();
+    return {
+      name,
+      closest(selector) { return selector === "main, [role='main']" && inMain ? {} : null; },
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 340, height: 800 }),
+      style: {
+        getPropertyValue: key => values.get(key)?.value || "",
+        getPropertyPriority: key => values.get(key)?.priority || "",
+        setProperty(key, value, priority) { values.set(key, { value, priority }); writes.push(name); }
+      }
+    };
+  }
+  const root = element("app-shell-sidebar");
+  const panel = element("app-shell-left-panel");
+  const workspace = element("workspace");
+  root.closest = selector => selector === "aside[data-app-shell-left-panel-appearance]" ? panel :
+    selector === "main, [role='main']" && inMain ? workspace : null;
+  const fixtureDocument = {
+    querySelector: selector => selector === "#app-shell-sidebar" ? root : null,
+    querySelectorAll: () => [panel],
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(extension, "frame.js"), "utf8"), {
+    window: { top: {}, frameElement: { hasAttribute: () => split }, addEventListener() {} },
+    document: fixtureDocument, location: { origin: "https://chatgpt.com" }, innerWidth: 600, innerHeight: 800,
+    MutationObserver: class { constructor() {} observe() {} }
+  });
+  return { writes, root, panel, workspace };
+}
+const narrowShell = shellSidebarFixture();
+assert.deepEqual(narrowShell.writes.sort(), ["app-shell-left-panel", "app-shell-sidebar"], "実HTMLの340px幅sidebarとそのasideを600px画面でも隠す");
+assert.equal(narrowShell.workspace.style.getPropertyValue("display"), "", "外側workspaceは非表示にしない");
+assert.deepEqual(shellSidebarFixture(false).writes, [], "通常iframeのshell sidebarは変更しない");
+assert.deepEqual(shellSidebarFixture(true, true).writes, [], "明示rootがmain内でも非表示にしない");

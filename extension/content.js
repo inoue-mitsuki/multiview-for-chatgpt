@@ -1,12 +1,77 @@
 (() => {
-  if (window.top !== window || globalThis.__chatgptSplitInstalled) return;
-  globalThis.__chatgptSplitInstalled = true;
+  if (window.top !== window) return;
+  const controllerVersion = "0.24.0";
   const origin = "https://chatgpt.com";
+  if (globalThis.__chatgptSplitInstalled === controllerVersion) return;
+  const existingHost = document.documentElement.querySelector("#chatgpt-split-extension");
+  const existingLauncher = document.documentElement.querySelector("#chatgpt-split-launcher");
+  let legacyController = !!(existingHost || existingLauncher);
+  let adoptedHost = null, handoffState = null;
+  if (existingHost?.getAttribute("data-controller-protocol") === "1" || existingLauncher?.getAttribute("data-controller-protocol") === "1") {
+    const marker = existingHost || existingLauncher;
+    marker.removeAttribute("data-controller-detached");
+    document.dispatchEvent(new Event("chatgpt-split-controller-handoff"));
+    if (marker.getAttribute("data-controller-detached") === "true") {
+      try { handoffState = JSON.parse(marker.getAttribute("data-controller-state") || "null"); } catch {}
+      const oldPanes = existingHost?.shadowRoot?.querySelector(".workspace")?.querySelector(".grid")?.querySelectorAll(".pane");
+      const validDom = !existingHost || (oldPanes?.length === 4 && [...oldPanes].every(pane => pane.querySelector("iframe")?.hasAttribute("data-chatgpt-split-frame")));
+      if (validDom && (!existingHost || validateState(handoffState))) {
+        legacyController = false;
+        adoptedHost = existingHost;
+      }
+    }
+  }
+  globalThis.__chatgptSplitInstalled = controllerVersion;
+  let detached = false, recoveredController = !!adoptedHost || (!legacyController && !!existingLauncher);
+  const controllerListeners = [], controllerTimers = new Set();
+  let registrationScope = "global";
+  function releaseListeners(scope) {
+    for (let index = controllerListeners.length - 1; index >= 0; index--) {
+      const [target, type, handler, options, entryScope] = controllerListeners[index];
+      if (scope && entryScope !== scope) continue;
+      target.removeEventListener(type, handler, options);
+      controllerListeners.splice(index, 1);
+    }
+  }
+  function listen(target, type, handler, options, explicitScope) {
+    target.addEventListener(type, handler, options);
+    const scope = explicitScope || (host?.shadowRoot?.contains(target) ? "split" : launcherHost?.shadowRoot?.contains(target) ? "launcher" : registrationScope);
+    controllerListeners.push([target, type, handler, options, scope]);
+  }
+  function delay(handler, milliseconds) {
+    const timer = setTimeout(() => { controllerTimers.delete(timer); if (!detached) handler(); }, milliseconds);
+    controllerTimers.add(timer);
+    return timer;
+  }
   let host, grid, observer, sidebarObserver, menuObserver, observedSide, pendingFrame = 0, pendingBadgeFrame = 0;
   let sidebarClickHandler, menuClickHandler, menuPointerHandler;
   let sidebarContextHandler, generalMenu, generalMenuAnchor;
   const generalButtons = new Map();
   const standardSelectionMarks = new Set();
+  const frameSidebarObservers = new Map();
+  function watchFrameSidebar(frame) {
+    if (detached) return;
+    frameSidebarObservers.get(frame)?.disconnect();
+    frameSidebarObservers.delete(frame);
+    if (!host || !frame.hasAttribute("data-chatgpt-split-frame")) return;
+    try {
+      const childDocument = frame.contentDocument;
+      if (!childDocument || childDocument === document) return;
+      const hide = () => {
+        if (detached || !host || frame.contentDocument !== childDocument || !frame.hasAttribute("data-chatgpt-split-frame")) return;
+        const side = childDocument.querySelector("#app-shell-sidebar");
+        if (!side || side.closest("main, [role='main']")) return;
+        for (const entry of [side, side.closest("aside[data-app-shell-left-panel-appearance]")]) {
+          if (!entry || entry.closest("main, [role='main']")) continue;
+          if (entry.style.getPropertyValue("display") !== "none" || entry.style.getPropertyPriority("display") !== "important") entry.style.setProperty("display", "none", "important");
+        }
+      };
+      hide();
+      const childObserver = new MutationObserver(() => { try { hide(); } catch {} });
+      childObserver.observe(childDocument, { childList: true, subtree: true, attributes: true, attributeFilter: ["style", "class"] });
+      frameSidebarObservers.set(frame, childObserver);
+    } catch {}
+  }
   // ユーザーの実タブで確認した標準ページのURL。
   const builtinRoutes = new Map([
     ["builtin:library", origin + "/library"], ["label:ライブラリ", origin + "/library"],
@@ -53,7 +118,7 @@
     const poll = (attempt = 0) => {
       if (!host || pendingNative !== operation) return;
       if (completeNativeRoute()) return;
-      if (attempt < 25) setTimeout(() => poll(attempt + 1), 200);
+      if (attempt < 25) delay(() => poll(attempt + 1), 200);
       else {
         pendingNative = null;
         if (invoke) {
@@ -63,7 +128,7 @@
         }
       }
     };
-    setTimeout(() => poll(), 200);
+    delay(() => poll(), 200);
   }
   const sidebarLabels = new WeakMap();
   const builtinLabels = new Set(["ライブラリ", "プラグイン", "スケジュール", "新しいチャット"]);
@@ -113,10 +178,10 @@
       item.type = "button";
       item.setAttribute("role", "menuitem");
       item.textContent = "画面" + number + "で開く";
-      item.addEventListener("click", () => { assignSidebarEntry(entry, number); closeGeneralMenu(); anchor.focus?.(); });
+      listen(item, "click", () => { assignSidebarEntry(entry, number); closeGeneralMenu(); anchor.focus?.(); }, undefined, "split");
       menu.append(item);
     }
-    menu.addEventListener("keydown", event => { if (event.key === "Escape") { closeGeneralMenu(); anchor.focus?.(); } });
+    listen(menu, "keydown", event => { if (event.key === "Escape") { closeGeneralMenu(); anchor.focus?.(); } }, undefined, "split");
     generalMenu = menu;
     document.body.append(menu);
     menu.children[1]?.focus?.();
@@ -148,7 +213,7 @@
         button.textContent = "…";
         button.setAttribute("aria-label", "分割表示の画面を選択");
         button.setAttribute("aria-haspopup", "menu");
-        button.addEventListener("click", event => { event.preventDefault(); event.stopPropagation(); showGeneralMenu(entry, button); });
+        listen(button, "click", event => { event.preventDefault(); event.stopPropagation(); showGeneralMenu(entry, button); }, undefined, "split");
         generalButtons.set(entry, button);
         document.body.append(button);
       }
@@ -214,7 +279,7 @@
   }
   function writeState(value) {
     persistentState = value; stateTouched = true;
-    try { chrome.storage?.local.set({ [stateKey]: value }, () => { void chrome.runtime.lastError; }); } catch {}
+    try { chrome.storage?.local.set({ [stateKey]: value }, () => { if (detached) return; try { void chrome.runtime.lastError; } catch {} }); } catch {}
     try { sessionStorage.setItem(stateKey, JSON.stringify(value)); } catch {}
   }
   function paneUrl(pane) {
@@ -346,6 +411,7 @@
     return url ? new URL(url).pathname.replace(/\/$/, "").split("/").pop() : null;
   }
   function refreshSidebarIndicators() {
+    if (detached) return;
     if (!host) return;
     const open = new Map();
     panes.forEach((pane, index) => {
@@ -500,6 +566,7 @@
     });
   }
   function scheduleBadgeUpdate() {
+    if (detached) return;
     if (!host || pendingBadgeFrame) return;
     pendingBadgeFrame = requestAnimationFrame(() => {
       pendingBadgeFrame = 0;
@@ -556,6 +623,7 @@
     return candidates[0] || null;
   }
   function updateLeft() {
+    if (detached) return;
     if (!host) return;
     const side = sidebar();
     if (observer && side !== observedSide) {
@@ -569,6 +637,7 @@
     host.style.left = Math.round(width) + "px";
   }
   function scheduleUpdateLeft() {
+    if (detached) return;
     if (pendingFrame) return;
     pendingFrame = requestAnimationFrame(() => {
       pendingFrame = 0;
@@ -676,6 +745,8 @@
     launcherHost.dataset.alignLeft = String(left < 110);
   }
   function bindFlyout(group, trigger, panel, onSelect) {
+    const flyoutScope = registrationScope === "launcher" ? "launcher" : "split";
+    const listenFlyout = (target, type, handler) => listen(target, type, handler, undefined, flyoutScope);
     const setOpen = open => {
       if (open) {
         const rect = group.getBoundingClientRect();
@@ -685,13 +756,13 @@
       panel.hidden = !open;
       trigger.setAttribute("aria-expanded", String(open));
     };
-    group.addEventListener("mouseenter", () => setOpen(true));
-    group.addEventListener("mouseleave", () => setOpen(false));
-    group.addEventListener("focusin", () => setOpen(true));
-    group.addEventListener("focusout", event => {
+    listenFlyout(group, "mouseenter", () => setOpen(true));
+    listenFlyout(group, "mouseleave", () => setOpen(false));
+    listenFlyout(group, "focusin", () => setOpen(true));
+    listenFlyout(group, "focusout", event => {
       if (!group.contains(event.relatedTarget)) setOpen(false);
     });
-    trigger.addEventListener("click", event => {
+    listenFlyout(trigger, "click", event => {
       event.preventDefault();
       event.stopPropagation();
       if (onSelect) { onSelect(); setOpen(false); launcherMenu.hidden = true; launcherToggle.setAttribute("aria-expanded", "false"); }
@@ -700,9 +771,14 @@
     return setOpen;
   }
   function showLauncher() {
+    if (detached) return;
+    const previousScope = registrationScope;
+    registrationScope = "launcher";
     if (!launcherHost) {
       launcherHost = document.createElement("div");
       launcherHost.id = "chatgpt-split-launcher";
+      launcherHost.setAttribute("data-controller-protocol", "1");
+      launcherHost.setAttribute("data-controller-version", controllerVersion);
       const shadow = launcherHost.attachShadow({ mode: "open" });
       const style = document.createElement("style");
       style.textContent = ":host { position: fixed; top: 56px; right: 70px; z-index: 9999; font: 13px sans-serif; } " +
@@ -740,7 +816,7 @@
       endButton.type = "button";
       endButton.className = "launcher-end";
       endButton.textContent = "分割を終了";
-      endButton.addEventListener("click", () => stop());
+      listen(endButton, "click", () => stop());
       launcherMenu.append(endButton);
       const twoGroup = document.createElement("div");
       twoGroup.className = "launcher-flyout";
@@ -761,7 +837,7 @@
         if (layout === "horizontal") button.dataset.startCount = "2";
         button.textContent = label;
         button.dataset.twoLayout = layout;
-        button.addEventListener("click", () => {
+        listen(button, "click", () => {
           setTwoLayout(layout);
           twoPanel.hidden = true;
           twoTrigger.setAttribute("aria-expanded", "false");
@@ -793,7 +869,7 @@
         button.dataset.threeLayout = layout;
         if (layout === "columns") button.dataset.startCount = "3";
         button.textContent = label;
-        button.addEventListener("click", () => {
+        listen(button, "click", () => {
           setThreeLayout(layout);
           layoutPanel.hidden = true;
           layoutTrigger.setAttribute("aria-expanded", "false");
@@ -825,7 +901,7 @@
         button.dataset.fourLayout = layout;
         if (layout === "grid") button.dataset.startCount = "4";
         button.textContent = label;
-        button.addEventListener("click", () => {
+        listen(button, "click", () => {
           setFourLayout(layout);
           fourPanel.hidden = true;
           fourTrigger.setAttribute("aria-expanded", "false");
@@ -839,7 +915,7 @@
       launcherMenu.append(fourGroup);
       let drag = null;
       let suppressClick = false;
-      launcherToggle.addEventListener("pointerdown", event => {
+      listen(launcherToggle, "pointerdown", event => {
         if (event.button !== 0) return;
         suppressClick = false;
         drag = {
@@ -850,7 +926,7 @@
         };
         launcherToggle.setPointerCapture?.(event.pointerId);
       });
-      launcherToggle.addEventListener("pointermove", event => {
+      listen(launcherToggle, "pointermove", event => {
         if (!drag) return;
         const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
         if (!drag.moved && Math.hypot(dx, dy) < 5) return;
@@ -861,7 +937,7 @@
         if (!drag) return;
         if (drag.moved && event?.type !== "pointercancel") {
           suppressClick = true;
-          setTimeout(() => { suppressClick = false; }, 0);
+          delay(() => { suppressClick = false; }, 0);
           sessionStorage.setItem(launcherPositionKey, JSON.stringify({
             x: Number.parseFloat(launcherHost.style.left),
             y: Number.parseFloat(launcherHost.style.top)
@@ -869,9 +945,9 @@
         }
         drag = null;
       };
-      launcherToggle.addEventListener("pointerup", finishDrag);
-      launcherToggle.addEventListener("pointercancel", finishDrag);
-      launcherToggle.addEventListener("click", () => {
+      listen(launcherToggle, "pointerup", finishDrag);
+      listen(launcherToggle, "pointercancel", finishDrag);
+      listen(launcherToggle, "click", () => {
         if (suppressClick) { suppressClick = false; return; }
         launcherMenu.hidden = !launcherMenu.hidden;
         launcherToggle.setAttribute("aria-expanded", String(!launcherMenu.hidden));
@@ -887,8 +963,8 @@
         launcherMenu.hidden = true;
         launcherToggle.setAttribute("aria-expanded", "false");
       };
-      document.addEventListener("pointerdown", launcherOutsideHandler, true);
-      window.addEventListener("resize", () => {
+      listen(document, "pointerdown", launcherOutsideHandler, true);
+      listen(window, "resize", () => {
         if (launcherHost.style.left) placeLauncher(Number.parseFloat(launcherHost.style.left), Number.parseFloat(launcherHost.style.top));
       });
     }
@@ -896,9 +972,11 @@
     launcherMenu.hidden = true;
     launcherToggle.setAttribute("aria-expanded", "false");
     updateLauncherMode();
+    registrationScope = previousScope;
   }
   function stop() {
     if (!host) return;
+    releaseListeners("split");
     pendingNative = null;
     consumedNativeUrl = null;
     saveState();
@@ -924,6 +1002,8 @@
     observer?.disconnect();
     sidebarObserver?.disconnect();
     menuObserver?.disconnect();
+    frameSidebarObservers.forEach(childObserver => childObserver.disconnect());
+    frameSidebarObservers.clear();
     if (sidebarClickHandler) document.removeEventListener("click", sidebarClickHandler, true);
     if (menuClickHandler) document.removeEventListener("click", menuClickHandler, true);
     if (menuPointerHandler) document.removeEventListener("pointerdown", menuPointerHandler, true);
@@ -941,9 +1021,12 @@
     panes.length = 0;
     showLauncher();
   }
-  function start(url, requestedCount) {
+  function start(url, requestedCount, adopt) {
+    if (detached) return;
     if (host || new URL(url).origin !== origin) return;
-    const saved = readState();
+    const previousScope = registrationScope;
+    registrationScope = "split";
+    const saved = adopt ? validateState(handoffState) || readState() : readState();
     const restore = !!saved;
     const parentRouteChanged = restore && saved.schemaVersion !== 3 && saved.parentUrl && saved.parentUrl !== location.href;
     if (saved?.schemaVersion === 3) {
@@ -954,9 +1037,11 @@
     }
     const initialCount = [2, 3, 4].includes(requestedCount) ? requestedCount :
       restore && [2, 3, 4].includes(Number(saved.count)) ? Number(saved.count) : 2;
-    host = document.createElement("div");
+    host = adopt || document.createElement("div");
+    host.setAttribute("data-controller-protocol", "1");
+    host.setAttribute("data-controller-version", controllerVersion);
     host.id = "chatgpt-split-extension";
-    const shadow = host.attachShadow({ mode: "open" });
+    const shadow = adopt ? host.shadowRoot : host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
     style.textContent = `
       :host { position: fixed; top: 0; right: 0; bottom: 0; z-index: 2; background: #111; color: white; }
@@ -987,17 +1072,20 @@
       .resize-handle.x { top: 0; bottom: 0; width: 8px; margin-left: -4px; cursor: col-resize; }
       .resize-handle.y { left: 0; right: 0; height: 8px; margin-top: -4px; cursor: row-resize; }
     `;
-    const workspace = document.createElement("div");
+    const workspace = adopt ? shadow.querySelector(".workspace") : document.createElement("div");
     workspace.className = "workspace";
-    grid = document.createElement("div");
+    grid = adopt ? workspace.querySelector(".grid") : document.createElement("div");
+    const existingPanes = adopt ? [...grid.querySelectorAll(".pane")] : [];
+    if (adopt) { shadow.querySelectorAll("style").forEach(item => item.remove()); [...grid.querySelectorAll(".resize-handle.x"), ...grid.querySelectorAll(".resize-handle.y"), ...grid.querySelectorAll(".four-resize")].forEach(item => item.remove()); }
     grid.className = "grid";
     for (let index = 0; index < 4; index++) {
-      const pane = document.createElement("div");
+      const pane = existingPanes[index] || document.createElement("div");
       pane.className = "pane";
-      const frame = document.createElement("iframe");
+      const frame = adopt ? pane.querySelector("iframe") : document.createElement("iframe");
+      if (adopt) [...pane.children].filter(item => item !== frame).forEach(item => item.remove());
       frame.title = "画面 " + (index + 1);
       frame.setAttribute("data-chatgpt-split-frame", "");
-      frame.addEventListener("load", () => { delete frame.dataset.pendingUrl; saveState(); });
+      listen(frame, "load", () => { watchFrameSidebar(frame); delete frame.dataset.pendingUrl; saveState(); });
       const placeholder = document.createElement("div");
       placeholder.className = "empty-state";
       const prompt = document.createElement("p");
@@ -1005,7 +1093,7 @@
       const newChat = document.createElement("button");
       newChat.type = "button";
       newChat.textContent = "新しいチャット";
-      newChat.addEventListener("click", () => { openPane(pane, origin + "/"); saveState(); });
+      listen(newChat, "click", () => { openPane(pane, origin + "/"); saveState(); });
       placeholder.append(prompt, newChat);
       const label = document.createElement("div");
       label.className = "label";
@@ -1015,7 +1103,7 @@
       reload.className = "reload-pane";
       reload.title = "この画面だけ更新";
       reload.textContent = "↻";
-      reload.addEventListener("click", () => {
+      listen(reload, "click", () => {
         try { frame.contentWindow.location.reload(); }
         catch { frame.src = frame.src; }
       });
@@ -1025,7 +1113,7 @@
       clear.title = "この画面だけ空にする";
       clear.setAttribute("aria-label", "画面" + (index + 1) + "を空にする");
       clear.textContent = "×";
-      clear.addEventListener("click", () => { emptyPane(pane); saveState(); });
+      listen(clear, "click", () => { emptyPane(pane); saveState(); });
       const swap = document.createElement("select");
       swap.className = "swap-pane";
       swap.title = "別の画面と入れ替える";
@@ -1036,7 +1124,7 @@
         swap.append(option);
       }
       swap.value = "";
-      swap.addEventListener("change", () => {
+      listen(swap, "change", () => {
         const target = Number(swap.value) - 1;
         swap.value = "";
         swapPanes(panes.indexOf(pane), target);
@@ -1046,7 +1134,15 @@
       controls.setAttribute("role", "group");
       controls.setAttribute("aria-label", "画面操作");
       controls.append(swap, reload, clear);
-      pane.append(frame, placeholder, label, controls);
+      if (!adopt) pane.append(frame);
+      pane.append(placeholder, label, controls);
+      if (adopt) {
+        placeholder.hidden = pane.dataset.empty !== "true";
+        reload.hidden = clear.hidden = pane.dataset.empty === "true";
+        panes.push(pane);
+        watchFrameSidebar(frame);
+        continue;
+      }
       const savedUrl = restore && chatgptUrl(saved.urls[index]);
       const legacyEmpty = index > 0 && restore && saved.schemaVersion === undefined && savedUrl === origin + "/";
       const savedEmpty = restore && saved.schemaVersion >= 2 && saved.urls[index] === null;
@@ -1059,9 +1155,8 @@
       grid.append(pane);
       panes.push(pane);
     }
-    workspace.append(grid);
-    shadow.append(style, workspace);
-    document.documentElement.append(host);
+    if (!adopt) { workspace.append(grid); shadow.append(style, workspace); document.documentElement.append(host); }
+    else shadow.append(style);
     addResizeHandle("x");
     addResizeHandle("y");
     if (resizedX) grid.style.setProperty("--split-x", (splitX * 100) + "%");
@@ -1072,7 +1167,7 @@
     setCount(initialCount);
     showLauncher();
     updateLeft();
-    window.addEventListener("resize", scheduleUpdateLeft);
+    listen(window, "resize", scheduleUpdateLeft);
     observer = new ResizeObserver(scheduleUpdateLeft);
     const side = sidebar();
     if (side) {
@@ -1162,7 +1257,7 @@
       }
       assignConversation(url, 1, location.href);
     };
-    document.addEventListener("click", sidebarClickHandler, true);
+    listen(document, "click", sidebarClickHandler, true);
     const menuOverlaySelector = "[role='menu'], [role='dialog'], [data-radix-menu-content], [data-radix-popper-content-wrapper], [data-radix-portal]";
     const rememberConversationMenu = (button, openedAtPointer) => {
       if (button.closest?.(menuOverlaySelector) || !sidebarRoots().some(root => root.contains(button))) return;
@@ -1181,7 +1276,7 @@
       else if (event.button === 2 && conversationFromRow(event.target)) rememberConversationMenu(event.target, true);
       else if (!event.target.closest?.(menuOverlaySelector)) pendingConversationMenu = null;
     };
-    document.addEventListener("pointerdown", menuPointerHandler, true);
+    listen(document, "pointerdown", menuPointerHandler, true);
     sidebarContextHandler = event => {
       const builtin = event.target.closest?.("[data-sidebar-destination], a[href], button.sidebar-item");
       if (builtinDestination(builtin) && sidebarRoots().some(root => root.contains(builtin))) { event.preventDefault(); showGeneralMenu(builtin, generalButtons.get(builtin) || builtin); return; }
@@ -1189,32 +1284,33 @@
       const conversation = conversationFromRow(event.target);
       if (conversation && sidebarRoots().some(root => root.contains(event.target))) {
         if (pendingConversationMenu?.url !== conversation) rememberConversationMenu(event.target, true);
-        setTimeout(() => installMenuItems(), 0);
+        delay(() => installMenuItems(), 0);
         return;
       }
       if (!link || !sidebarRoots().some(root => root.contains(link))) return;
       if (conversationIdentity(link.href)) {
         rememberConversationMenu(link, true);
-        setTimeout(() => installMenuItems(), 0);
+        delay(() => installMenuItems(), 0);
       } else if (chatgptUrl(link.href) && !projectIdentity(link.href)) {
         event.preventDefault();
         showGeneralMenu(link, generalButtons.get(link) || link);
       }
     };
-    document.addEventListener("contextmenu", sidebarContextHandler, true);
-    window.addEventListener("scroll", scheduleBadgeUpdate, true);
-    window.addEventListener("resize", scheduleBadgeUpdate);
+    listen(document, "contextmenu", sidebarContextHandler, true);
+    listen(window, "scroll", scheduleBadgeUpdate, true);
+    listen(window, "resize", scheduleBadgeUpdate);
     menuClickHandler = event => {
       if (event.target.closest?.(menuOverlaySelector)) return;
       const button = event.target.closest?.(conversationOptionsSelector);
       if (!button) return;
       if (pendingConversationMenu?.url !== conversationFromRow(button)) rememberConversationMenu(button, false);
-      setTimeout(() => installMenuItems(), 0);
+      delay(() => installMenuItems(), 0);
     };
-    document.addEventListener("click", menuClickHandler, true);
+    listen(document, "click", menuClickHandler, true);
     let lastParentUrl = location.href;
     let lastPaneUrls = "";
     const syncRoute = () => {
+      if (detached) return;
       if (!host) return;
       if (location.href !== lastParentUrl) {
         lastParentUrl = location.href;
@@ -1230,6 +1326,7 @@
     };
     syncRoute();
     routeTimer = setInterval(syncRoute, 400);
+    registrationScope = previousScope;
   }
   function addFourResize(axis, index) {
     const handle = document.createElement("div");
@@ -1237,7 +1334,7 @@
     handle.dataset.axis = axis;
     handle.dataset.boundary = String(index);
     handle.hidden = true;
-    handle.addEventListener("pointerdown", event => {
+    listen(handle, "pointerdown", event => {
       event.preventDefault();
       handle.setPointerCapture(event.pointerId);
       const move = next => {
@@ -1257,9 +1354,9 @@
         handle.removeEventListener("pointerup", up);
         handle.removeEventListener("pointercancel", up);
       };
-      handle.addEventListener("pointermove", move);
-      handle.addEventListener("pointerup", up);
-      handle.addEventListener("pointercancel", up);
+      listen(handle, "pointermove", move);
+      listen(handle, "pointerup", up);
+      listen(handle, "pointercancel", up);
     });
     grid.append(handle);
   }
@@ -1268,7 +1365,7 @@
     handle.className = "resize-handle " + axis;
     handle.hidden = axis === "y";
     handle.style[axis === "x" ? "left" : "top"] = "50%";
-    handle.addEventListener("pointerdown", event => {
+    listen(handle, "pointerdown", event => {
       event.preventDefault();
       handle.setPointerCapture(event.pointerId);
       const move = next => {
@@ -1291,9 +1388,9 @@
         handle.removeEventListener("pointerup", up);
         handle.removeEventListener("pointercancel", up);
       };
-      handle.addEventListener("pointermove", move);
-      handle.addEventListener("pointerup", up);
-      handle.addEventListener("pointercancel", up);
+      listen(handle, "pointermove", move);
+      listen(handle, "pointerup", up);
+      listen(handle, "pointercancel", up);
     });
     grid.append(handle);
   }
@@ -1309,6 +1406,7 @@
     return null;
   }
   function installMenuItems() {
+    if (detached) return;
     if (!host || !pendingConversationMenu) return;
     document.querySelectorAll("[role='menu']").forEach(menu => {
       if (!menu.getClientRects().length) return;
@@ -1325,7 +1423,7 @@
       pendingConversationMenu = null;
       const group = document.createElement("div");
       group.dataset.chatgptSplitMenu = "true";
-      group.addEventListener("pointerdown", event => event.stopPropagation());
+      listen(group, "pointerdown", event => event.stopPropagation(), undefined, "split");
       const trigger = document.createElement("button");
       trigger.type = "button";
       trigger.dataset.chatgptSplitTrigger = "true";
@@ -1345,12 +1443,12 @@
         item.type = "button";
         item.dataset.chatgptSplitPaneOption = String(index);
         item.textContent = "画面" + index + "で開く";
-        item.addEventListener("click", event => {
+        listen(item, "click", event => {
           event.preventDefault();
           event.stopPropagation();
           assignConversation(target, index, location.href);
           menu.remove();
-        });
+        }, undefined, "split");
         submenu.append(item);
       }
       menu.append(group);
@@ -1363,7 +1461,7 @@
     dialog.setAttribute("role", "dialog");
     dialog.setAttribute("aria-label", "分割ビュー診断");
     dialog.style.cssText = "position:fixed;inset:10% 15%;z-index:2147483647;background:#222;color:#fff;padding:20px;border:1px solid #888;border-radius:12px;overflow:auto;font:13px monospace";
-    const data = { version: "0.22.5", splitActive: !!host, sidebarRoots: sidebarRoots().length, registeredStandardItems: generalButtons.size, panes: panes.map((pane, index) => {
+    const data = { version: controllerVersion, splitActive: !!host, sidebarRoots: sidebarRoots().length, registeredStandardItems: generalButtons.size, panes: panes.map((pane, index) => {
       const frame = pane.querySelector("iframe");
       try {
         const doc = frame.contentDocument;
@@ -1373,14 +1471,25 @@
     const close = document.createElement("button");
     close.textContent = "閉じる";
     close.type = "button";
-    close.addEventListener("click", () => dialog.remove());
+    listen(close, "click", () => { dialog.remove(); releaseListeners("diagnostic"); }, undefined, "diagnostic");
     const text = document.createElement("pre");
     text.textContent = JSON.stringify(data, null, 2);
     dialog.append(close, text);
     document.body.append(dialog);
     close.focus?.();
   }
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  const runtimeMessageHandler = (message, sender, sendResponse) => {
+    if (detached) return;
+    if (message.type === "controller-alive") {
+      sendResponse?.({ alive: true, version: controllerVersion });
+      return;
+    }
+    if (message.type === "recover-split-controller") {
+      sendResponse?.({ recovered: recoveredController, legacy: legacyController, version: controllerVersion });
+      recoveredController = false;
+      return;
+    }
+    if (legacyController) return;
     if (message.type === "show-split-diagnostics") {
       showDiagnostics();
       sendResponse?.({ shown: true });
@@ -1394,9 +1503,35 @@
     } else if (message.type === "assign-page") {
       assignPage(message.url, message.pane, message.pageUrl);
     }
-  });
+  };
+  chrome.runtime.onMessage.addListener(runtimeMessageHandler);
+  function detachController() {
+    if (detached || legacyController) return;
+    const marker = host || launcherHost;
+    if (!marker) return;
+    if (host) saveState();
+    marker.setAttribute("data-controller-state", JSON.stringify(readState()));
+    detached = true;
+    releaseListeners();
+    controllerTimers.forEach(timer => clearTimeout(timer));
+    if (routeTimer) clearInterval(routeTimer);
+    if (pendingFrame) cancelAnimationFrame(pendingFrame);
+    if (pendingBadgeFrame) cancelAnimationFrame(pendingBadgeFrame);
+    observer?.disconnect(); sidebarObserver?.disconnect(); menuObserver?.disconnect();
+    frameSidebarObservers.forEach(item => item.disconnect()); frameSidebarObservers.clear();
+    try { chrome.runtime.onMessage.removeListener?.(runtimeMessageHandler); } catch {}
+    closeGeneralMenu(); generalButtons.forEach(item => item.remove());
+    indicatorStyle?.remove(); menuStyle?.remove();
+    document.querySelectorAll("[data-chatgpt-split-menu]").forEach(item => item.remove());
+    launcherHost?.remove();
+    marker.setAttribute("data-controller-detached", "true");
+  }
+  listen(document, "chatgpt-split-controller-handoff", detachController);
+  if (legacyController) return;
   showLauncher();
+  if (adoptedHost) start(location.href, undefined, adoptedHost);
   const initializeState = result => {
+    if (detached) return;
     const failed = !!chrome.runtime.lastError;
     if (stateTouched || host) { stateLoaded = true; return; }
     let legacy = null;

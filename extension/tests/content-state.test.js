@@ -16,6 +16,7 @@ function page(href, options = {}) {
   const timers = [];
   const animationFrames = [];
   const mutationCallbacks = [];
+  const mutationObservers = [];
   class Element {
     constructor(tagName) {
       this.tagName = tagName;
@@ -25,10 +26,17 @@ function page(href, options = {}) {
       this.listeners = new Map();
       this.className = "";
       this.src = "";
+      this.srcWrites = 0;
+      this.appendWrites = 0;
+      this.removeWrites = 0;
+      if (tagName === "iframe") {
+        let frameSrc = "";
+        Object.defineProperty(this, "src", { get: () => frameSrc, set: value => { frameSrc = value; this.srcWrites++; } });
+      }
       this.attrs = {};
       this.innerHTML = "";
     }
-    append(...items) { for (const item of items) { item.parentElement = this; this.children.push(item); } }
+    append(...items) { this.appendWrites++; for (const item of items) { item.parentElement = this; this.children.push(item); } }
     attachShadow() { this.shadowRoot = new Element("shadow"); return this.shadowRoot; }
     addEventListener(type, listener) { this.listeners.set(type, listener); }
     setPointerCapture() {}
@@ -40,6 +48,7 @@ function page(href, options = {}) {
       if (name === "title") this.title = "";
     }
     getAttribute(name) { return this.attrs[name] || null; }
+    hasAttribute(name) { return Object.hasOwn(this.attrs, name); }
     matches(selector) {
       if (selector === "[data-sidebar-destination], a[href], button.sidebar-item") return !!this.getAttribute("data-sidebar-destination") || (this.tagName === "a" && !!this.href) || (this.tagName === "button" && this.className.includes("sidebar-item"));
       if (selector === "a[href*='/c/']") return this.tagName === "a" && this.href?.includes("/c/");
@@ -53,12 +62,16 @@ function page(href, options = {}) {
     closest(selector) { for (let item = this; item; item = item.parentElement) if (item.matches(selector)) return item; return null; }
     getClientRects() { return [1]; }
     contains(element) { return element === this || this.descendants().includes(element); }
-    remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(item => item !== this); }
+    remove() { this.removeWrites++; if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(item => item !== this); }
     descendants() { return this.children.flatMap(child => [child, ...child.descendants()]); }
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
     querySelectorAll(selector) {
       const items = this.descendants();
       if (selector === "iframe") return items.filter(item => item.tagName === "iframe");
+      if (selector.startsWith("#")) return items.filter(item => item.id === selector.slice(1));
+      if (selector === ".pane") return items.filter(item => item.className === "pane");
+      if (selector === ".workspace") return items.filter(item => item.className === "workspace");
+      if (selector === "style") return items.filter(item => item.tagName === "style");
       if (selector === "a[href]") return items.filter(item => item.tagName === "a" && !!item.href);
       if (selector === "[data-count-button]") return items.filter(item => item.dataset.countButton);
       if (selector === ".resize-handle.y" || selector === ".resize-handle.x") return items.filter(item => item.className === "resize-handle " + selector.at(-1));
@@ -93,7 +106,8 @@ function page(href, options = {}) {
     querySelector: () => null, querySelectorAll: selector => selector === "[role='menu']" ? document.body.descendants().filter(item => item.role === "menu") :
       selector.includes("aside, nav") ? document.body.descendants().filter(item => item.tagName === "nav") : [],
     addEventListener(type, listener) { documentListeners.set(type + ":" + (documentListeners.size + 1), listener); },
-    removeEventListener() {}
+    removeEventListener(type, listener) { for (const [key, value] of documentListeners) if (key.startsWith(type + ":") && value === listener) documentListeners.delete(key); },
+    dispatchEvent(event) { for (const [key, listener] of [...documentListeners]) if (key.startsWith(event.type + ":")) listener(event); }
   };
   const location = { href: url.href, origin: url.origin, pathname: url.pathname };
   const window = { addEventListener(type, listener) { if (type === "click") windowListeners.set(listener, type); }, removeEventListener(type, listener) { windowListeners.delete(listener); },
@@ -112,17 +126,18 @@ function page(href, options = {}) {
       set(value, callback) { if (options.failWrite) throw new Error("quota"); for (const [key, item] of Object.entries(value)) options.local.set(key, JSON.parse(JSON.stringify(item))); callback?.(); }
     } } : undefined, runtime: { onMessage: { addListener: listener => { messageListener = listener; } } } },
     ResizeObserver: class { observe() {} disconnect() {} },
-    MutationObserver: class { constructor(callback) { mutationCallbacks.push(callback); } observe() {} disconnect() {} },
+    MutationObserver: class { constructor(callback) { this.callback = callback; mutationCallbacks.push(callback); mutationObservers.push(this); } observe(target) { this.target = target; this.active = true; } disconnect() { this.active = false; } },
     requestAnimationFrame: callback => { animationFrames.push(callback); return animationFrames.length; }, cancelAnimationFrame() {},
-    setTimeout: callback => { timers.push(callback); }, setInterval: callback => { intervalCallback = callback; return 1; }, clearInterval() {}
+    Event: class { constructor(type) { this.type = type; } },
+    setTimeout: callback => { timers.push(callback); }, setInterval: callback => { intervalCallback = callback; return 1; }, clearInterval() {}, clearTimeout() {}
   };
   vm.runInNewContext(source, context);
   const host = () => document.documentElement.children.find(item => item.id === "chatgpt-split-extension");
   const launcher = () => document.documentElement.children.find(item => item.id === "chatgpt-split-launcher");
   const frames = () => host()?.shadowRoot.querySelectorAll("iframe") || [];
   const panes = () => frames().map(frame => frame.parentElement);
-  return { host, launcher, frames, panes, message: value => messageListener(value), close: () => launcher().shadowRoot.querySelector(".launcher-end").listeners.get("click")(),
-    document, pointer: event => { for (const [key, listener] of documentListeners) if (key.startsWith("pointerdown:")) listener(event); },
+  return { host, launcher, frames, panes, reinject: (nextSource, resetFlag = false) => { if (resetFlag) context.__chatgptSplitInstalled = null; vm.runInNewContext(nextSource, context); }, message: (value, sender, respond) => messageListener(value, sender, respond), close: () => launcher().shadowRoot.querySelector(".launcher-end").listeners.get("click")(),
+    document, mutationObservers, pointer: event => { for (const [key, listener] of documentListeners) if (key.startsWith("pointerdown:")) listener(event); },
     contextMenu: event => { for (const [key, listener] of documentListeners) if (key.startsWith("contextmenu:")) listener(event); },
     windowClick: event => { for (const listener of windowListeners.keys()) listener(event); },
     later: callback => timers.push(callback),
@@ -551,6 +566,134 @@ assert.equal(nativeAssign.frames()[0].src, "https://chatgpt.com/c/keep-pane-one"
 assert.equal(nativeAssign.frames()[1].src, "", "移動先以外の空画面へリクエストしない");
 nativeAssign.close();
 
+{
+const parentHides = page("https://chatgpt.com/c/parent-fallback");
+parentHides.message({ type: "toggle-four-view", url: "https://chatgpt.com/c/parent-fallback" });
+const frame = parentHides.frames()[1];
+frame.contentDocument = null;
+frame.listeners.get("load")();
+function childDocument(inMain = false) {
+  let root;
+  let writes = 0;
+  function side() {
+    const style = { value: "", priority: "", getPropertyValue() { return this.value; }, getPropertyPriority() { return this.priority; }, setProperty(name, value, priority) { this.value = value; this.priority = priority; writes++; } };
+    return { style, closest: selector => selector === "main, [role='main']" && inMain ? {} : null };
+  }
+  const panel = side();
+  const doc = { querySelector: selector => selector === "#app-shell-sidebar" ? root : null };
+  return { doc, panel, writes: () => writes,
+    insert() { root = side(); root.closest = selector => selector === "aside[data-app-shell-left-panel-appearance]" ? panel : selector === "main, [role='main']" && inMain ? {} : null; return root; } };
+}
+const firstChild = childDocument();
+frame.contentDocument = firstChild.doc;
+frame.listeners.get("load")();
+const childObserver = parentHides.mutationObservers.find(item => item.target === firstChild.doc);
+assert.ok(childObserver?.active, "sidebarの遅延挿入を親側から監視する");
+const childRoot = firstChild.insert();
+childObserver.callback();
+assert.equal(firstChild.writes(), 2, "子documentのsidebar本体とasideだけを隠す");
+childObserver.callback();
+assert.equal(firstChild.writes(), 2, "自己mutationで書き込みループしない");
+childRoot.style.value = "block";
+childObserver.callback();
+assert.equal(childRoot.style.value, "none", "再描画で戻ったsidebarを再適用する");
+const secondChild = childDocument();
+secondChild.insert();
+frame.contentDocument = secondChild.doc;
+frame.listeners.get("load")();
+assert.equal(childObserver.active, false, "iframe再読込時に旧document監視を解除する");
+assert.equal(secondChild.writes(), 2);
+const secondObserver = parentHides.mutationObservers.find(item => item.target === secondChild.doc);
+frame.contentDocument = parentHides.document;
+frame.listeners.get("load")();
+assert.equal(secondObserver.active, false);
+assert.equal(parentHides.mutationObservers.some(item => item.target === parentHides.document && item.active), false, "トップdocumentは子sidebar監視対象にしない");
+const mainChild = childDocument(true);
+mainChild.insert();
+frame.contentDocument = mainChild.doc;
+frame.listeners.get("load")();
+assert.equal(mainChild.writes(), 0, "main内のrootやasideを親側から隠さない");
+Object.defineProperty(frame, "contentDocument", { configurable: true, get() { throw new Error("SecurityError"); } });
+frame.dataset.pendingUrl = "https://chatgpt.com/c/pending";
+assert.doesNotThrow(() => frame.listeners.get("load")(), "子documentアクセス失敗でもload処理を続行する");
+assert.equal(frame.dataset.pendingUrl, undefined, "アクセス失敗でもpending状態を解除する");
+Object.defineProperty(frame, "contentDocument", { configurable: true, writable: true, value: secondChild.doc });
+frame.contentDocument = secondChild.doc;
+frame.listeners.get("load")();
+const finalObserver = parentHides.mutationObservers.filter(item => item.target === secondChild.doc).at(-1);
+parentHides.close();
+assert.equal(finalObserver.active, false, "分割終了時にも子document監視を解除する");
+}
+
+{
+const recovery = page("https://chatgpt.com/c/recovery");
+recovery.message({ type: "toggle-four-view", url: "https://chatgpt.com/c/recovery" });
+const oldHost = recovery.host();
+const oldFrames = recovery.frames();
+oldFrames[0].inputSentinel = "unsent text";
+const originalSrc = oldFrames.map(frame => frame.src);
+const originalSrcWrites = oldFrames.map(frame => frame.srcWrites);
+const frameParents = oldFrames.map(frame => frame.parentElement);
+const originalFrameRemove = oldFrames.map(frame => frame.removeWrites);
+recovery.reinject(source.replace('const controllerVersion = "0.24.0"', 'const controllerVersion = "0.24.1"'));
+assert.equal(recovery.host(), oldHost, "更新handoffでhostを置換しない");
+assert.equal(recovery.frames()[0], oldFrames[0], "更新handoffでiframeを移動・置換しない");
+assert.deepEqual(recovery.frames().map(frame => frame.src), originalSrc, "更新復旧でiframe URLを変更しない");
+assert.deepEqual(oldFrames.map(frame => frame.srcWrites), originalSrcWrites, "同一URLも含めsrc再代入を一切行わない");
+assert.deepEqual(oldFrames.map(frame => frame.parentElement), frameParents, "iframeの親paneを変えない");
+assert.deepEqual(oldFrames.map(frame => frame.removeWrites), originalFrameRemove, "iframeをDOMから取り外さない");
+assert.equal(oldFrames[0].inputSentinel, "unsent text");
+let response;
+recovery.message({ type: "controller-alive" }, null, value => { response = value; });
+assert.equal(response.alive, true, "alive probeは復旧状態を消費しない");
+recovery.message({ type: "recover-split-controller" }, null, value => { response = value; });
+assert.equal(response?.recovered, true, "復旧クリックはtoggleを実行しない");
+recovery.reinject(source.replace('const controllerVersion = "0.24.0"', 'const controllerVersion = "0.24.1"'), true);
+recovery.message({ type: "recover-split-controller" }, null, value => { response = value; });
+assert.equal(response.recovered, true, "同版flagを解除した再注入でも停止ack後に復旧する");
+assert.equal(recovery.frames()[0], oldFrames[0]);
+assert.deepEqual(oldFrames.map(frame => frame.srcWrites), originalSrcWrites, "同版復旧もiframe reloadなし");
+recovery.close();
+assert.ok(oldFrames.every(frame => frame.listeners.size === 0), "終了後はiframe listener参照を解除する");
+recovery.message({ type: "toggle-four-view", url: "https://chatgpt.com/c/recovery" });
+const restartedFrames = recovery.frames();
+recovery.close();
+assert.ok(restartedFrames.every(frame => frame.listeners.size === 0), "start/stop反復でも旧frame listenerを保持しない");
+}
+
+{
+const sameVersion = page("https://chatgpt.com/c/same-version");
+sameVersion.message({ type: "toggle-four-view", url: "https://chatgpt.com/c/same-version" });
+const frame = sameVersion.frames()[0];
+const writes = frame.srcWrites;
+frame.inputSentinel = "unsent same version";
+sameVersion.reinject(source, true);
+let reply;
+sameVersion.message({ type: "recover-split-controller" }, null, value => { reply = value; });
+assert.equal(reply.recovered, true, "sourceの版変更なしでもflag reset後handoffを復旧する");
+assert.equal(sameVersion.frames()[0], frame);
+assert.equal(frame.srcWrites, writes);
+assert.equal(frame.inputSentinel, "unsent same version");
+sameVersion.close();
+}
+
+{
+const legacyRecovery = page("https://chatgpt.com/c/legacy");
+legacyRecovery.message({ type: "toggle-four-view", url: "https://chatgpt.com/c/legacy" });
+const host = legacyRecovery.host();
+const frames = legacyRecovery.frames();
+const writes = frames.map(frame => frame.srcWrites);
+host.removeAttribute("data-controller-protocol");
+legacyRecovery.launcher().removeAttribute("data-controller-protocol");
+legacyRecovery.reinject(source.replace('const controllerVersion = "0.24.0"', 'const controllerVersion = "0.24.1"'));
+let response;
+legacyRecovery.message({ type: "recover-split-controller" }, null, value => { response = value; });
+assert.equal(response.legacy, true, "hookのない旧DOMでは安全な手動移行を要求する");
+assert.equal(legacyRecovery.host(), host);
+assert.deepEqual(frames.map(frame => frame.srcWrites), writes, "legacyの入力を保持するiframeを操作しない");
+storage.delete("chatgpt-split-view-state");
+}
+
 const actualLibrary = page("https://chatgpt.com/c/existing-thread");
 const actualLibraryNav = actualLibrary.document.createElement("nav");
 const actualLibraryItem = actualLibrary.document.createElement("button");
@@ -582,7 +725,7 @@ actualLibrary.message({ type: "show-split-diagnostics" });
 const diagnosticDialog = actualLibrary.document.body.descendants().find(item => item.id === "chatgpt-split-diagnostics");
 assert.ok(diagnosticDialog);
 const diagnosticData = JSON.parse(diagnosticDialog.children[1].textContent);
-assert.equal(diagnosticData.version, "0.22.5");
+assert.equal(diagnosticData.version, "0.24.0");
 assert.equal(diagnosticDialog.children[1].textContent.includes("https://"), false);
 diagnosticDialog.children[0].listeners.get("click")();
 actualLibrary.close();

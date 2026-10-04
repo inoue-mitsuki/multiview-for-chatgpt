@@ -12,17 +12,22 @@
   }
   function hideSidebar() {
     if (!isSplitFrame()) return;
-    const candidates = [...document.querySelectorAll('aside, nav, [data-testid*="sidebar"], [class*="sidebar"]')]
-      .filter(suitable);
+    // 実際のapp shellではsidebar本体と幅を持つasideを明示的に隠す。
+    const shellSidebar = document.querySelector("#app-shell-sidebar");
+    const explicit = new Set(shellSidebar && !shellSidebar.closest("main, [role='main']") ?
+      [shellSidebar, shellSidebar.closest("aside[data-app-shell-left-panel-appearance]")].filter(Boolean) : []);
+    const candidates = [...new Set([...explicit, ...document.querySelectorAll('aside, nav, [data-testid*="sidebar"], [class*="sidebar"]')])]
+      .filter(side => !side.closest("main, [role='main']") && (explicit.has(side) || hidden.has(side) || suitable(side)));
     candidates.forEach(side => {
-      if (hidden.has(side)) return;
+      if (side.style.getPropertyValue("display") === "none" && side.style.getPropertyPriority("display") === "important") return;
       side.style.setProperty("display", "none", "important");
       hidden.add(side);
     });
   }
   hideSidebar();
   const observer = new MutationObserver(hideSidebar);
-  observer.observe(document, { childList: true, subtree: true });
+  observer.observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ["style", "class"] });
+  window.addEventListener("resize", hideSidebar);
   window.addEventListener("message", event => {
     if (!isSplitFrame() || event.source !== window.parent || event.origin !== "https://chatgpt.com" || event.data?.type !== "focus-composer") return;
     const input = document.querySelector("textarea, [contenteditable='true'], #prompt-textarea");
