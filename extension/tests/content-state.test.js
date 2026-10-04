@@ -17,6 +17,7 @@ function page(href, options = {}) {
   const animationFrames = [];
   const mutationCallbacks = [];
   const mutationObservers = [];
+  let stateWrites = 0;
   class Element {
     constructor(tagName) {
       this.tagName = tagName;
@@ -118,7 +119,7 @@ function page(href, options = {}) {
     innerWidth: 1200, innerHeight: 800,
     sessionStorage: {
       getItem: key => storage.get(key) || null,
-      setItem: (key, value) => storage.set(key, value),
+      setItem: (key, value) => { if (key === "chatgpt-split-view-state") stateWrites++; storage.set(key, value); },
       removeItem: key => storage.delete(key)
     },
     chrome: { storage: options.local ? { local: {
@@ -137,7 +138,7 @@ function page(href, options = {}) {
   const frames = () => host()?.shadowRoot.querySelectorAll("iframe") || [];
   const panes = () => frames().map(frame => frame.parentElement);
   return { host, launcher, frames, panes, reinject: (nextSource, resetFlag = false) => { if (resetFlag) context.__chatgptSplitInstalled = null; vm.runInNewContext(nextSource, context); }, message: (value, sender, respond) => messageListener(value, sender, respond), close: () => launcher().shadowRoot.querySelector(".launcher-end").listeners.get("click")(),
-    document, mutationObservers, pointer: event => { for (const [key, listener] of documentListeners) if (key.startsWith("pointerdown:")) listener(event); },
+    document, mutationObservers, stateWrites: () => stateWrites, pointer: event => { for (const [key, listener] of documentListeners) if (key.startsWith("pointerdown:")) listener(event); },
     contextMenu: event => { for (const [key, listener] of documentListeners) if (key.startsWith("contextmenu:")) listener(event); },
     windowClick: event => { for (const listener of windowListeners.keys()) listener(event); },
     later: callback => timers.push(callback),
@@ -247,11 +248,13 @@ assert.equal(layoutPage.host().shadowRoot.querySelector(".resize-handle.y").hidd
 const layoutXHandle = layoutPage.host().shadowRoot.querySelector(".resize-handle.x");
 layoutXHandle.listeners.get("pointerdown")({ preventDefault() {}, pointerId: 1 });
 layoutXHandle.listeners.get("pointermove")({ clientX: 480, clientY: 200 });
+layoutPage.flush();
 assert.equal(layoutPage.host().shadowRoot.querySelector(".resize-handle.y").style.left, "60%", "左側の幅変更に合わせて右側の上下境界も移動する");
 layoutXHandle.listeners.get("pointerup")();
 const layoutYHandle = layoutPage.host().shadowRoot.querySelector(".resize-handle.y");
 layoutYHandle.listeners.get("pointerdown")({ preventDefault() {}, pointerId: 2 });
 layoutYHandle.listeners.get("pointermove")({ clientX: 600, clientY: 360 });
+layoutPage.flush();
 assert.equal(layoutGrid.style["--split-y"], "60%", "右側の上下境界を動かせる");
 layoutYHandle.listeners.get("pointerup")();
 assert.deepEqual(layoutPage.frames().map(frame => frame.src), ["https://chatgpt.com/c/layout", "", "", ""], "配置切替だけでは追加のChatGPTを読み込まない");
@@ -288,6 +291,7 @@ for (const layout of ["columns", "stacked"]) {
     handle.listeners.get("pointerdown")({ preventDefault() {}, pointerId: 3 });
     const target = parseFloat(before) / 100 + .03;
     handle.listeners.get("pointermove")({ clientX: target * 800, clientY: target * 600 });
+    fourPage.flush();
     assert.notEqual(handle.style[handle.dataset.axis === "x" ? "left" : "top"], before);
     handle.listeners.get("pointerup")();
   }
@@ -635,7 +639,7 @@ const originalSrc = oldFrames.map(frame => frame.src);
 const originalSrcWrites = oldFrames.map(frame => frame.srcWrites);
 const frameParents = oldFrames.map(frame => frame.parentElement);
 const originalFrameRemove = oldFrames.map(frame => frame.removeWrites);
-recovery.reinject(source.replace('const controllerVersion = "0.24.0"', 'const controllerVersion = "0.24.1"'));
+recovery.reinject(source.replace('const controllerVersion = "0.25.0"', 'const controllerVersion = "0.25.1"'));
 assert.equal(recovery.host(), oldHost, "更新handoffでhostを置換しない");
 assert.equal(recovery.frames()[0], oldFrames[0], "更新handoffでiframeを移動・置換しない");
 assert.deepEqual(recovery.frames().map(frame => frame.src), originalSrc, "更新復旧でiframe URLを変更しない");
@@ -648,7 +652,7 @@ recovery.message({ type: "controller-alive" }, null, value => { response = value
 assert.equal(response.alive, true, "alive probeは復旧状態を消費しない");
 recovery.message({ type: "recover-split-controller" }, null, value => { response = value; });
 assert.equal(response?.recovered, true, "復旧クリックはtoggleを実行しない");
-recovery.reinject(source.replace('const controllerVersion = "0.24.0"', 'const controllerVersion = "0.24.1"'), true);
+recovery.reinject(source.replace('const controllerVersion = "0.25.0"', 'const controllerVersion = "0.25.1"'), true);
 recovery.message({ type: "recover-split-controller" }, null, value => { response = value; });
 assert.equal(response.recovered, true, "同版flagを解除した再注入でも停止ack後に復旧する");
 assert.equal(recovery.frames()[0], oldFrames[0]);
@@ -685,13 +689,72 @@ const frames = legacyRecovery.frames();
 const writes = frames.map(frame => frame.srcWrites);
 host.removeAttribute("data-controller-protocol");
 legacyRecovery.launcher().removeAttribute("data-controller-protocol");
-legacyRecovery.reinject(source.replace('const controllerVersion = "0.24.0"', 'const controllerVersion = "0.24.1"'));
+legacyRecovery.reinject(source.replace('const controllerVersion = "0.25.0"', 'const controllerVersion = "0.25.1"'));
 let response;
 legacyRecovery.message({ type: "recover-split-controller" }, null, value => { response = value; });
 assert.equal(response.legacy, true, "hookのない旧DOMでは安全な手動移行を要求する");
 assert.equal(legacyRecovery.host(), host);
 assert.deepEqual(frames.map(frame => frame.srcWrites), writes, "legacyの入力を保持するiframeを操作しない");
 storage.delete("chatgpt-split-view-state");
+}
+
+{
+const batchedDrag = page("https://chatgpt.com/c/batched-drag");
+batchedDrag.message({ type: "toggle-four-view", url: "https://chatgpt.com/c/batched-drag" });
+batchedDrag.flush();
+const grid = batchedDrag.host().shadowRoot.querySelector(".grid");
+let rectReads = 0;
+grid.getBoundingClientRect = () => { rectReads++; return { left: 0, top: 0, width: 800, height: 600 }; };
+const handle = batchedDrag.host().shadowRoot.querySelector(".resize-handle.x");
+const writes = batchedDrag.stateWrites();
+handle.listeners.get("pointerdown")({ preventDefault() {}, pointerId: 4 });
+for (let index = 0; index < 20; index++) handle.listeners.get("pointermove")({ pointerId: 4, clientX: 320 + index, clientY: 0 });
+assert.equal(rectReads, 0, "raf前はpointermove毎のlayout計測をしない");
+assert.equal(batchedDrag.stateWrites(), writes, "ドラッグ中の状態保存を抑止する");
+batchedDrag.flush();
+assert.equal(rectReads, 1, "20イベントを1回のlayout更新へ集約する");
+assert.equal(grid.style["--split-x"], "42.375%");
+handle.listeners.get("pointermove")({ pointerId: 99, clientX: 100, clientY: 0 });
+handle.listeners.get("pointerup")({ pointerId: 4, clientX: 560, clientY: 0 });
+assert.equal(grid.style["--split-x"], "70%", "pointerupの最新座標を同期で反映する");
+assert.equal(batchedDrag.stateWrites(), writes + 1, "終了時に1回だけ保存する");
+batchedDrag.flush();
+assert.equal(rectReads, 2, "終了後の待機rafは更新しない");
+handle.listeners.get("pointerdown")({ preventDefault() {}, pointerId: 5 });
+handle.listeners.get("pointermove")({ pointerId: 5, clientX: 400, clientY: 0 });
+handle.listeners.get("pointercancel")({ pointerId: 5 });
+assert.equal(grid.style["--split-x"], "50%", "cancel時も直前の最新座標を反映する");
+handle.listeners.get("pointerdown")({ preventDefault() {}, pointerId: 8 });
+handle.listeners.get("pointermove")({ pointerId: 8, clientX: 440, clientY: 0 });
+handle.listeners.get("pointerup")({ pointerId: 99, clientX: 100, clientY: 0 });
+assert.ok(handle.listeners.has("pointermove"), "他pointerのupではドラッグを終了しない");
+handle.listeners.get("lostpointercapture")({ pointerId: 8 });
+assert.equal(grid.style["--split-x"], "55.00000000000001%", "capture喪失時も最後の座標を保存する");
+assert.equal(handle.listeners.has("pointermove"), false);
+handle.listeners.get("pointerdown")({ preventDefault() {}, pointerId: 6 });
+handle.listeners.get("pointermove")({ pointerId: 6, clientX: 600, clientY: 0 });
+const stoppedReads = rectReads;
+batchedDrag.close();
+batchedDrag.flush();
+assert.equal(rectReads, stoppedReads + 1, "stopは最新座標を1回反映し、その後の待機rafは更新しない");
+assert.equal(handle.listeners.has("pointermove"), false);
+}
+
+{
+const handoffDrag = page("https://chatgpt.com/c/handoff-drag");
+handoffDrag.message({ type: "toggle-four-view", url: "https://chatgpt.com/c/handoff-drag" });
+handoffDrag.flush();
+const grid = handoffDrag.host().shadowRoot.querySelector(".grid");
+const handle = handoffDrag.host().shadowRoot.querySelector(".resize-handle.x");
+handle.listeners.get("pointerdown")({ preventDefault() {}, pointerId: 1 });
+handle.listeners.get("pointermove")({ pointerId: 1, clientX: 560, clientY: 0 });
+handoffDrag.reinject(source.replace('const controllerVersion = "0.25.0"', 'const controllerVersion = "0.25.1"'));
+assert.equal(grid.style["--split-x"], "70%", "detach時は保留中の最新geometryをhandoffへ反映する");
+assert.equal(handle.listeners.has("pointermove"), false);
+const writes = handoffDrag.stateWrites();
+handoffDrag.flush();
+assert.equal(handoffDrag.stateWrites(), writes, "旧世代の待機rafから保存しない");
+handoffDrag.close();
 }
 
 const actualLibrary = page("https://chatgpt.com/c/existing-thread");
@@ -725,7 +788,7 @@ actualLibrary.message({ type: "show-split-diagnostics" });
 const diagnosticDialog = actualLibrary.document.body.descendants().find(item => item.id === "chatgpt-split-diagnostics");
 assert.ok(diagnosticDialog);
 const diagnosticData = JSON.parse(diagnosticDialog.children[1].textContent);
-assert.equal(diagnosticData.version, "0.24.0");
+assert.equal(diagnosticData.version, "0.25.0");
 assert.equal(diagnosticDialog.children[1].textContent.includes("https://"), false);
 diagnosticDialog.children[0].listeners.get("click")();
 actualLibrary.close();

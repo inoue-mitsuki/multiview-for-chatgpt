@@ -1,6 +1,6 @@
 (() => {
   if (window.top !== window) return;
-  const controllerVersion = "0.24.0";
+  const controllerVersion = "0.25.0";
   const origin = "https://chatgpt.com";
   if (globalThis.__chatgptSplitInstalled === controllerVersion) return;
   const existingHost = document.documentElement.querySelector("#chatgpt-split-extension");
@@ -24,6 +24,7 @@
   globalThis.__chatgptSplitInstalled = controllerVersion;
   let detached = false, recoveredController = !!adoptedHost || (!legacyController && !!existingLauncher);
   const controllerListeners = [], controllerTimers = new Set();
+  const activeResizeDrags = new Set();
   let registrationScope = "global";
   function releaseListeners(scope) {
     for (let index = controllerListeners.length - 1; index >= 0; index--) {
@@ -976,6 +977,7 @@
   }
   function stop() {
     if (!host) return;
+    activeResizeDrags.forEach(finish => finish(true, false));
     releaseListeners("split");
     pendingNative = null;
     consumedNativeUrl = null;
@@ -1328,16 +1330,59 @@
     routeTimer = setInterval(syncRoute, 400);
     registrationScope = previousScope;
   }
+  function bindResizeDrag(handle, apply) {
+    listen(handle, "pointerdown", event => {
+      if (event.button != null && event.button !== 0) return;
+      event.preventDefault();
+      activeResizeDrags.forEach(finish => finish(true, true));
+      handle.setPointerCapture(event.pointerId);
+      let pending, raf = 0, finished = false, changed = false;
+      const accepts = next => next?.pointerId == null || next.pointerId === event.pointerId;
+      const flush = () => {
+        raf = 0;
+        if (finished || detached || !host || !pending) return;
+        const point = pending; pending = null;
+        apply(point); changed = true;
+      };
+      const move = next => {
+        if (!accepts(next) || finished) return;
+        pending = { clientX: next.clientX, clientY: next.clientY };
+        if (!raf) raf = requestAnimationFrame(flush);
+      };
+      const finish = (flushPending = true, persist = true) => {
+        if (finished) return;
+        if (raf) cancelAnimationFrame(raf);
+        if (flushPending) flush();
+        finished = true; pending = null;
+        activeResizeDrags.delete(finish);
+        for (let index = controllerListeners.length - 1; index >= 0; index--) {
+          const [target, type, handler, options] = controllerListeners[index];
+          if (target !== handle || ![move, up, cancel].includes(handler)) continue;
+          target.removeEventListener(type, handler, options);
+          controllerListeners.splice(index, 1);
+        }
+        if (persist && changed && !detached && host) saveState();
+      };
+      const up = next => {
+        if (!accepts(next)) return;
+        if (Number.isFinite(next?.clientX) && Number.isFinite(next?.clientY)) pending = { clientX: next.clientX, clientY: next.clientY };
+        finish();
+      };
+      const cancel = next => { if (accepts(next)) finish(); };
+      activeResizeDrags.add(finish);
+      listen(handle, "pointermove", move);
+      listen(handle, "pointerup", up);
+      listen(handle, "pointercancel", cancel);
+      listen(handle, "lostpointercapture", cancel);
+    });
+  }
   function addFourResize(axis, index) {
     const handle = document.createElement("div");
     handle.className = "resize-handle " + axis + " four-resize";
     handle.dataset.axis = axis;
     handle.dataset.boundary = String(index);
     handle.hidden = true;
-    listen(handle, "pointerdown", event => {
-      event.preventDefault();
-      handle.setPointerCapture(event.pointerId);
-      const move = next => {
+    bindResizeDrag(handle, next => {
         const rect = grid.getBoundingClientRect();
         const value = axis === "x" ? (next.clientX - rect.left) / rect.width : (next.clientY - rect.top) / rect.height;
         if (axis === "x" && fourLayout === "stacked") fourLeft = Math.max(.15, Math.min(.85, value));
@@ -1347,16 +1392,6 @@
           boundaries[index] = Math.max((boundaries[index - 1] || 0) + gap, Math.min((boundaries[index + 1] || 1) - gap, value));
         }
         updateFourResize();
-        saveState();
-      };
-      const up = () => {
-        handle.removeEventListener("pointermove", move);
-        handle.removeEventListener("pointerup", up);
-        handle.removeEventListener("pointercancel", up);
-      };
-      listen(handle, "pointermove", move);
-      listen(handle, "pointerup", up);
-      listen(handle, "pointercancel", up);
     });
     grid.append(handle);
   }
@@ -1365,10 +1400,7 @@
     handle.className = "resize-handle " + axis;
     handle.hidden = axis === "y";
     handle.style[axis === "x" ? "left" : "top"] = "50%";
-    listen(handle, "pointerdown", event => {
-      event.preventDefault();
-      handle.setPointerCapture(event.pointerId);
-      const move = next => {
+    bindResizeDrag(handle, next => {
         const rect = grid.getBoundingClientRect();
         const value = axis === "x" ? (next.clientX - rect.left) / rect.width : (next.clientY - rect.top) / rect.height;
         const ratio = Math.max(.2, Math.min(.8, value));
@@ -1381,16 +1413,6 @@
             host.shadowRoot.querySelector(".resize-handle.y").style.left = (ratio * 100) + "%";
         }
         else { splitY = ratio; grid.style.setProperty("--split-y", (ratio * 100) + "%"); handle.style.top = (ratio * 100) + "%"; }
-        saveState();
-      };
-      const up = () => {
-        handle.removeEventListener("pointermove", move);
-        handle.removeEventListener("pointerup", up);
-        handle.removeEventListener("pointercancel", up);
-      };
-      listen(handle, "pointermove", move);
-      listen(handle, "pointerup", up);
-      listen(handle, "pointercancel", up);
     });
     grid.append(handle);
   }
@@ -1509,6 +1531,7 @@
     if (detached || legacyController) return;
     const marker = host || launcherHost;
     if (!marker) return;
+    activeResizeDrags.forEach(finish => finish(true, false));
     if (host) saveState();
     marker.setAttribute("data-controller-state", JSON.stringify(readState()));
     detached = true;
