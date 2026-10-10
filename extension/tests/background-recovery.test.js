@@ -5,7 +5,7 @@ const vm = require("node:vm");
 const { test } = require("node:test");
 const source = fs.readFileSync(path.join(__dirname, "..", "background.js"), "utf8");
 
-async function click(recovery, url = "https://chatgpt.com/c/test", fail = false, probe = { alive: true, version: "0.25.0" }) {
+async function click(recovery, url = "https://chatgpt.com/c/test", fail = false, probe = { alive: true, version: "0.28.0" }) {
   const calls = [];
   let handler;
   const chrome = {
@@ -16,35 +16,35 @@ async function click(recovery, url = "https://chatgpt.com/c/test", fail = false,
     scripting: { async executeScript(details) { calls.push([details.func ? "reset-controller-flag" : "inject"]); if (fail) throw new Error("injection failed"); if (details.func) { details.func(); assert.equal(runtimeContext.__chatgptSplitInstalled, null, "注入funcが同版の旧flagを実際に解除する"); } } },
     tabs: { async sendMessage(id, message) { calls.push([message.type]); if (message.type === "controller-alive") { if (probe === "unreachable") throw new Error("no receiver"); return probe === "undefined-response" ? undefined : probe; } return recovery; }, reload() { throw new Error("reload prohibited"); } }
   };
-  const runtimeContext = vm.createContext({ chrome, URL, __chatgptSplitInstalled: "0.25.0" });
+  const runtimeContext = vm.createContext({ chrome, URL, __chatgptSplitInstalled: "0.28.0" });
   vm.runInContext(source, runtimeContext);
   await handler({ id: 1, url });
   return calls;
 }
 test("更新復旧成功時はinject→recoverのみでtoggle/reloadしない", async () => {
-  const calls = await click({ recovered: true, legacy: false, version: "0.25.0" });
+  const calls = await click({ recovered: true, legacy: false, version: "0.28.0" });
   assert.deepEqual(calls.slice(0, 3), [["controller-alive"], ["inject"], ["recover-split-controller"]]);
   assert.equal(calls.some(([name]) => name === "toggle-four-view"), false);
 });
 test("同版通常クリックはrecover確認後toggle", async () => {
-  assert.deepEqual((await click({ recovered: false, legacy: false, version: "0.25.0" })).slice(0, 4), [["controller-alive"], ["inject"], ["recover-split-controller"], ["toggle-four-view"]]);
+  assert.deepEqual((await click({ recovered: false, legacy: false, version: "0.28.0" })).slice(0, 4), [["controller-alive"], ["inject"], ["recover-split-controller"], ["toggle-four-view"]]);
 });
 test("旧controllerが無応答なら版flagをresetしてから再注入・復旧する", async () => {
   for (const probe of ["undefined-response", "unreachable"]) {
-    const calls = await click({ recovered: true, legacy: false, version: "0.25.0" }, undefined, false, probe);
+    const calls = await click({ recovered: true, legacy: false, version: "0.28.0" }, undefined, false, probe);
     assert.deepEqual(calls.slice(0, 4), [["controller-alive"], ["reset-controller-flag"], ["inject"], ["recover-split-controller"]]);
     assert.equal(calls.some(([name]) => name === "toggle-four-view"), false);
   }
 });
 test("不正なalive応答は注入もtoggleもせずfail closed", async () => {
-  for (const probe of [null, {}, { alive: false, version: "0.25.0" }, { alive: true }]) {
+  for (const probe of [null, {}, { alive: false, version: "0.28.0" }, { alive: true }]) {
     const calls = await click({}, undefined, false, probe);
     assert.equal(calls.some(([name]) => name === "inject" || name === "reset-controller-flag" || name === "toggle-four-view"), false);
     assert.ok(calls.some(([name, value]) => name === "badge" && value === "!"));
   }
 });
 test("旧版は要移行を表示してDOM変更用toggleしない", async () => {
-  const calls = await click({ legacy: true, recovered: false, version: "0.25.0" });
+  const calls = await click({ legacy: true, recovered: false, version: "0.28.0" });
   assert.ok(calls.some(([name, value]) => name === "badge" && value === "要移行"));
   assert.equal(calls.some(([name]) => name === "toggle-four-view"), false);
 });
@@ -58,4 +58,39 @@ test("復旧応答が不正/無応答ならtoggleせず失敗表示", async () =
 test("対象外URLと注入失敗は画面操作を行わない", async () => {
   assert.equal((await click({}, "https://chatgpt.com.evil.example/")).some(([name]) => name === "inject"), false);
   assert.equal((await click({}, undefined, true)).some(([name]) => name === "toggle-four-view"), false);
+});
+
+async function installed(reason, tabs, failures = new Set(), legacy = new Set()) {
+  const calls = [];
+  let handler;
+  const chrome = {
+    runtime: { onInstalled: { addListener(value) { handler = value; } }, onStartup: { addListener() {} } },
+    contextMenus: { removeAll(callback) { callback(); }, create() {}, onClicked: { addListener() {} } },
+    action: { onClicked: { addListener() {} }, async setBadgeText(value) { calls.push(["badge", value.tabId, value.text]); if (failures.has(value.tabId)) throw new Error("tab no longer exists"); }, async setTitle() {}, async setBadgeBackgroundColor() {} },
+    scripting: { async executeScript(details) { const id = details.target.tabId; calls.push([details.func ? "reset" : "inject", id]); if (failures.has(id)) throw new Error("closed tab"); } },
+    tabs: {
+      async query(query) { calls.push(["query", query.url]); return tabs; },
+      async sendMessage(id, message) { calls.push([message.type, id]); if (message.type === "controller-alive") return undefined; return { legacy: legacy.has(id), recovered: true, version: "test-version" }; },
+      reload() { throw new Error("reload prohibited"); }
+    }
+  };
+  vm.runInNewContext(source, { chrome, URL });
+  await handler({ reason });
+  return calls;
+}
+test("install/updateで既存ChatGPTtabを復旧しtoggle/reloadしない", async () => {
+  for (const reason of ["install", "update"]) {
+    const calls = await installed(reason, [{ id: 1, url: "https://chatgpt.com/c/existing" }, { id: 2, url: "https://chatgpt.com.evil.example/" }]);
+    assert.ok(calls.some(([type, value]) => type === "query" && value === "https://chatgpt.com/*"));
+    assert.ok(calls.some(([type, id]) => type === "recover-split-controller" && id === 1));
+    assert.equal(calls.some(([type, id]) => id === 2 && ["inject", "reset", "recover-split-controller"].includes(type)), false);
+    assert.equal(calls.some(([type]) => type === "toggle-four-view"), false);
+  }
+});
+test("自動復旧のclosedtab失敗を隔離しlegacyも保護する", async () => {
+  const calls = await installed("update", [{ id: 1, url: "https://chatgpt.com/" }, { id: 2, url: "https://chatgpt.com/library" }], new Set([1]), new Set([2]));
+  assert.ok(calls.some(([type, id]) => type === "recover-split-controller" && id === 2));
+  assert.ok(calls.some(([type, id, text]) => type === "badge" && id === 2 && text === "要移行"));
+  assert.equal(calls.some(([type]) => type === "toggle-four-view"), false);
+  assert.equal((await installed("chrome_update", [])).some(([type]) => type === "query"), false);
 });

@@ -4,6 +4,14 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const extension = path.join(__dirname, "..");
+function trackFrameStyles(doc) {
+  const styles = [];
+  const query = doc.querySelector?.bind(doc);
+  doc.querySelector = selector => selector === "#chatgpt-split-thread-width" ? styles[0] || null : query?.(selector) || null;
+  doc.createElement = () => ({});
+  doc.documentElement = { append(style) { styles.push(style); } };
+  return styles;
+}
 const manifest = JSON.parse(fs.readFileSync(path.join(extension, "manifest.json"), "utf8"));
 for (const size of [16, 32, 48, 128]) {
   assert.equal(manifest.icons[String(size)], `icons/icon${size}.png`, "直接読み込む開発版にも専用アイコンを指定する");
@@ -35,6 +43,7 @@ const side = {
 };
 const mainNav = { closest: () => ({}), getBoundingClientRect() { throw new Error("main内のnavの寸法は検査しない"); } };
 const document = { querySelectorAll: () => [side, mainNav], querySelector: () => null };
+const threadStyles = trackFrameStyles(document);
 const window = { top: {}, frameElement: null, addEventListener(type, callback) { if (type === "resize") resize = callback; } };
 vm.runInNewContext(fs.readFileSync(path.join(extension, "frame.js"), "utf8"), {
   window, document, location: { origin: "https://chatgpt.com" }, innerWidth: 1200, innerHeight: 800,
@@ -44,13 +53,22 @@ assert.equal(observed, document, "DOMが未生成のdocument_startでも監視�
 sideVisible = true;
 onMutation();
 assert.equal(sideVisible, true, "frameElementが未確定なら別フレームを変更しない");
+assert.equal(threadStyles.length, 0, "通常iframeには本文幅CSSを追加しない");
 window.frameElement = { hasAttribute: () => true };
 onMutation();
 assert.equal(sideVisible, false, "サイドバーの挿入直後に隠す");
+assert.equal(threadStyles.length, 1, "split iframeに本文幅CSSを追加する");
+assert.equal(threadStyles[0].textContent, '[data-app-shell-sidebar-open] { --app-shell-navigation-rail-width: 0px !important; }');
+assert.equal(threadStyles[0].textContent.includes("max-width"), false, "通常本文の最大幅を変更しない");
+assert.equal(/padding\s*:|width\s*:\s*100vw/.test(threadStyles[0].textContent), false, "既存paddingとviewport幅を変更しない");
 assert.equal(observedOptions.attributes, true, "再描画によるstyle/class変更も監視する");
 assert.deepEqual(Array.from(observedOptions.attributeFilter), ["style", "class"]);
 onMutation();
 assert.equal(hideWrites, 1, "自身のstyle更新通知では再書き込みしない");
+assert.equal(threadStyles.length, 1, "自身のmutationでCSSを重複注入しない");
+threadStyles[0].textContent = '[class~="max-w-(--thread-body-max-width)"] { max-width: 100% !important; }';
+onMutation();
+assert.equal(threadStyles[0].textContent, '[data-app-shell-sidebar-open] { --app-shell-navigation-rail-width: 0px !important; }', "旧本文幅CSSも同じstyle要素で置換する");
 display = "block";
 displayPriority = "";
 sideVisible = true;
@@ -103,6 +121,7 @@ function shellSidebarFixture(split = true, inMain = false) {
     querySelector: selector => selector === "#app-shell-sidebar" ? root : null,
     querySelectorAll: () => [panel],
   };
+  trackFrameStyles(fixtureDocument);
   vm.runInNewContext(fs.readFileSync(path.join(extension, "frame.js"), "utf8"), {
     window: { top: {}, frameElement: { hasAttribute: () => split }, addEventListener() {} },
     document: fixtureDocument, location: { origin: "https://chatgpt.com" }, innerWidth: 600, innerHeight: 800,

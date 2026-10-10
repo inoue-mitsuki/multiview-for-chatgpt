@@ -12,6 +12,16 @@
   }
   function hideSidebar() {
     if (!isSplitFrame()) return;
+    if (document.documentElement) {
+      let style = document.querySelector("#chatgpt-split-thread-width");
+      const css = '[data-app-shell-sidebar-open] { --app-shell-navigation-rail-width: 0px !important; }';
+      if (!style) {
+        style = document.createElement("style");
+        style.id = "chatgpt-split-thread-width";
+        style.textContent = css;
+        document.documentElement.append(style);
+      } else if (style.textContent !== css) style.textContent = css;
+    }
     // 実際のapp shellではsidebar本体と幅を持つasideを明示的に隠す。
     const shellSidebar = document.querySelector("#app-shell-sidebar");
     const explicit = new Set(shellSidebar && !shellSidebar.closest("main, [role='main']") ?

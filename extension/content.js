@@ -1,6 +1,6 @@
 (() => {
   if (window.top !== window) return;
-  const controllerVersion = "0.25.0";
+  const controllerVersion = "0.28.0";
   const origin = "https://chatgpt.com";
   if (globalThis.__chatgptSplitInstalled === controllerVersion) return;
   const existingHost = document.documentElement.querySelector("#chatgpt-split-extension");
@@ -36,7 +36,8 @@
   }
   function listen(target, type, handler, options, explicitScope) {
     target.addEventListener(type, handler, options);
-    const scope = explicitScope || (host?.shadowRoot?.contains(target) ? "split" : launcherHost?.shadowRoot?.contains(target) ? "launcher" : registrationScope);
+    const isNode = typeof target?.nodeType === "number";
+    const scope = explicitScope || (isNode && host?.shadowRoot?.contains(target) ? "split" : isNode && launcherHost?.shadowRoot?.contains(target) ? "launcher" : registrationScope);
     controllerListeners.push([target, type, handler, options, scope]);
   }
   function delay(handler, milliseconds) {
@@ -60,6 +61,16 @@
       if (!childDocument || childDocument === document) return;
       const hide = () => {
         if (detached || !host || frame.contentDocument !== childDocument || !frame.hasAttribute("data-chatgpt-split-frame")) return;
+        if (childDocument.documentElement) {
+          let style = childDocument.querySelector("#chatgpt-split-thread-width");
+          const css = '[data-app-shell-sidebar-open] { --app-shell-navigation-rail-width: 0px !important; }';
+          if (!style) {
+            style = childDocument.createElement("style");
+            style.id = "chatgpt-split-thread-width";
+            style.textContent = css;
+            childDocument.documentElement.append(style);
+          } else if (style.textContent !== css) style.textContent = css;
+        }
         const side = childDocument.querySelector("#app-shell-sidebar");
         if (!side || side.closest("main, [role='main']")) return;
         for (const entry of [side, side.closest("aside[data-app-shell-left-panel-appearance]")]) {
@@ -214,15 +225,30 @@
         button.textContent = "…";
         button.setAttribute("aria-label", "分割表示の画面を選択");
         button.setAttribute("aria-haspopup", "menu");
-        listen(button, "click", event => { event.preventDefault(); event.stopPropagation(); showGeneralMenu(entry, button); }, undefined, "split");
+        listen(button, "click", event => {
+          event.preventDefault(); event.stopPropagation();
+          if (generalMenu && generalMenuAnchor === button) closeGeneralMenu();
+          else showGeneralMenu(entry, button);
+        }, undefined, "split");
         generalButtons.set(entry, button);
         document.body.append(button);
       }
       const rect = entry.getBoundingClientRect();
-      button.hidden = !visibleInScrollContainers(entry);
+      // 元アイコン24px＋三点24px＋余白16pxを置けない狭いrailでは表示しない。
+      button.hidden = rect.width < 64 || !visibleInScrollContainers(entry);
+      if (button.hidden && (generalMenuAnchor === entry || generalMenuAnchor === button)) closeGeneralMenu();
       button.style.left = Math.max(0, rect.right - 28) + "px";
       button.style.top = (rect.top + Math.max(0, (rect.height - 24) / 2)) + "px";
     }
+  }
+  function isSidebarHeadingHome(entry) {
+    return entry?.tagName?.toLowerCase() === "a" && entry.getAttribute("aria-label") === "ホーム" &&
+      entry.classList?.contains("button-link") && !entry.hasAttribute("data-sidebar-destination") &&
+      chatgptUrl(entry.href) === origin + "/";
+  }
+  function isNativeSidebarEntry(entry) {
+    const url = chatgptUrl(entry?.href);
+    return isSidebarHeadingHome(entry) || !!(url && /^\/local(?:\/|$)/.test(new URL(url).pathname));
   }
   let routeTimer;
   let launcherHost, launcherMenu, launcherToggle, launcherOutsideHandler;
@@ -421,7 +447,7 @@
     });
     const roots = sidebarRoots();
     const links = new Set(roots.flatMap(root => [...root.querySelectorAll("a[href]")]));
-    const generalEntries = new Set([...links, ...roots.flatMap(root => [...root.querySelectorAll("[data-sidebar-destination], button.sidebar-item")])]);
+    const generalEntries = new Set([...links, ...roots.flatMap(root => [...root.querySelectorAll("[data-sidebar-destination], button.sidebar-item")])].filter(entry => !isNativeSidebarEntry(entry)));
     updateGeneralButtons(generalEntries);
     for (const entry of standardSelectionMarks) {
       if (!generalEntries.has(entry) || (!standardRoute(entry) && !conversationIdentity(entry.href))) {
@@ -605,7 +631,8 @@
   }
   function sidebarRoots() {
     const main = document.querySelector("main");
-    const candidates = [...document.querySelectorAll('aside, nav, [data-testid*="sidebar"], [class*="sidebar"]')]
+    const shellSidebar = document.querySelector("#app-shell-sidebar");
+    const candidates = [...new Set([shellSidebar, ...document.querySelectorAll('aside, nav, [data-testid*="sidebar"], [class*="sidebar"]')].filter(Boolean))]
       .filter(element => {
         if (main && element.contains(main)) return false;
         const rect = element.getBoundingClientRect();
@@ -617,7 +644,7 @@
   function sidebar() {
     const candidates = sidebarRoots();
     candidates.sort((a, b) => {
-      const score = element => Number(element.matches("nav, aside")) * 10000 +
+      const score = element => Number(element.id === "app-shell-sidebar") * 20000 + Number(element.matches("nav, aside")) * 10000 +
         Math.min(element.getBoundingClientRect().height, innerHeight);
       return score(b) - score(a);
     });
@@ -1215,6 +1242,7 @@
     sidebarClickHandler = event => {
       if (!host || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.target.closest("#chatgpt-split-extension, [data-chatgpt-split-menu]")) return;
       const builtin = event.target.closest("[data-sidebar-destination], a[href], button.sidebar-item");
+      if (isNativeSidebarEntry(builtin)) return;
       // 確認済みの標準ページはURLで直接割当。未知の項目は本来の操作からURLを取得する。
       if (builtinDestination(builtin) && builtin.tagName?.toLowerCase() === "button") {
         if (!invokingNative && standardRoute(builtin)) {
@@ -1281,6 +1309,7 @@
     listen(document, "pointerdown", menuPointerHandler, true);
     sidebarContextHandler = event => {
       const builtin = event.target.closest?.("[data-sidebar-destination], a[href], button.sidebar-item");
+      if (isNativeSidebarEntry(builtin)) return;
       if (builtinDestination(builtin) && sidebarRoots().some(root => root.contains(builtin))) { event.preventDefault(); showGeneralMenu(builtin, generalButtons.get(builtin) || builtin); return; }
       const link = event.target.closest?.("a[href]");
       const conversation = conversationFromRow(event.target);

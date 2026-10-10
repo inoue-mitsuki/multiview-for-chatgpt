@@ -13,6 +13,7 @@ function page(href, options = {}) {
   let intervalCallback;
   const documentListeners = new Map();
   const windowListeners = new Map();
+  const resizeListeners = new Set();
   const timers = [];
   const animationFrames = [];
   const mutationCallbacks = [];
@@ -21,11 +22,13 @@ function page(href, options = {}) {
   class Element {
     constructor(tagName) {
       this.tagName = tagName;
+      this.nodeType = 1;
       this.children = [];
       this.dataset = {};
       this.style = { setProperty(name, value) { this[name] = value; } };
       this.listeners = new Map();
       this.className = "";
+      this.classList = { contains: name => this.className.split(/\s+/).includes(name) };
       this.src = "";
       this.srcWrites = 0;
       this.appendWrites = 0;
@@ -62,7 +65,10 @@ function page(href, options = {}) {
     }
     closest(selector) { for (let item = this; item; item = item.parentElement) if (item.matches(selector)) return item; return null; }
     getClientRects() { return [1]; }
-    contains(element) { return element === this || this.descendants().includes(element); }
+    contains(element) {
+      if (element != null && !(element instanceof Element) && element !== document) throw new TypeError("contains parameter is not a Node");
+      return element === this || this.descendants().includes(element);
+    }
     remove() { this.removeWrites++; if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(item => item !== this); }
     descendants() { return this.children.flatMap(child => [child, ...child.descendants()]); }
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
@@ -101,17 +107,18 @@ function page(href, options = {}) {
     getBoundingClientRect() { return this.tagName === "nav" ? { left: 0, right: 260, top: 0, width: 260, height: 800 } : { left: 0, right: 800, top: 0, width: 800, height: 600 }; }
   }
   const document = {
+    nodeType: 9,
     documentElement: new Element("html"), body: new Element("body"), head: new Element("head"),
     createElement: name => new Element(name),
     createDocumentFragment: () => new Element("fragment"),
-    querySelector: () => null, querySelectorAll: selector => selector === "[role='menu']" ? document.body.descendants().filter(item => item.role === "menu") :
+    querySelector: selector => selector.startsWith("#") ? document.body.querySelector(selector) : null, querySelectorAll: selector => selector === "[role='menu']" ? document.body.descendants().filter(item => item.role === "menu") :
       selector.includes("aside, nav") ? document.body.descendants().filter(item => item.tagName === "nav") : [],
     addEventListener(type, listener) { documentListeners.set(type + ":" + (documentListeners.size + 1), listener); },
     removeEventListener(type, listener) { for (const [key, value] of documentListeners) if (key.startsWith(type + ":") && value === listener) documentListeners.delete(key); },
     dispatchEvent(event) { for (const [key, listener] of [...documentListeners]) if (key.startsWith(event.type + ":")) listener(event); }
   };
   const location = { href: url.href, origin: url.origin, pathname: url.pathname };
-  const window = { addEventListener(type, listener) { if (type === "click") windowListeners.set(listener, type); }, removeEventListener(type, listener) { windowListeners.delete(listener); },
+  const window = { addEventListener(type, listener) { if (type === "click") windowListeners.set(listener, type); if (type === "resize") resizeListeners.add(listener); }, removeEventListener(type, listener) { windowListeners.delete(listener); resizeListeners.delete(listener); },
     getComputedStyle: element => ({ overflowX: element.mockOverflow || "visible", overflowY: element.mockOverflow || "visible" }) };
   window.top = window;
   const context = {
@@ -141,6 +148,7 @@ function page(href, options = {}) {
     document, mutationObservers, stateWrites: () => stateWrites, pointer: event => { for (const [key, listener] of documentListeners) if (key.startsWith("pointerdown:")) listener(event); },
     contextMenu: event => { for (const [key, listener] of documentListeners) if (key.startsWith("contextmenu:")) listener(event); },
     windowClick: event => { for (const listener of windowListeners.keys()) listener(event); },
+    resize: () => { for (const listener of resizeListeners) listener(); },
     later: callback => timers.push(callback),
     flush: () => { while (timers.length || animationFrames.length) {
       while (timers.length) timers.shift()();
@@ -191,6 +199,34 @@ for (const count of [2, 3, 4]) {
 }
 
 const layoutPage = page("https://chatgpt.com/c/layout");
+const shellPage = page("https://chatgpt.com/c/shell-current");
+const shellRoot = shellPage.document.createElement("div");
+shellRoot.id = "app-shell-sidebar";
+shellRoot.className = "select-none relative flex h-full w-full flex-col";
+shellRoot.getBoundingClientRect = () => ({ left: 0, right: 340, top: 0, width: 340, height: 800 });
+const shellNav = shellPage.document.createElement("nav");
+const shellCurrent = shellPage.document.createElement("a");
+shellCurrent.href = "https://chatgpt.com/c/shell-current";
+const shellNext = shellPage.document.createElement("a");
+shellNext.href = "https://chatgpt.com/c/shell-next";
+shellRoot.append(shellNav, shellCurrent, shellNext);
+shellPage.document.body.append(shellRoot);
+shellPage.message({ type: "toggle-four-view", url: shellCurrent.href });
+shellPage.flush();
+assert.equal(shellCurrent.dataset.chatgptSplitPane, "1", "IDだけで識別されるshellサイドバーの会話にも番号を表示する");
+let shellPrevented = false;
+shellPage.click({ target: shellNext, button: 0, preventDefault() { shellPrevented = true; }, stopPropagation() {} });
+assert.equal(shellPrevented, true, "子nav外の会話行もshell全体から通常クリックで捕捉する");
+assert.equal(shellPage.frames()[0].src, shellNext.href, "未割当のshell会話を画面1へ割り当てる");
+shellPage.reinject(source, true);
+shellPage.flush();
+assert.equal(shellNext.dataset.chatgptSplitPane, "1", "同版handoff後もshell会話番号を維持する");
+shellPage.click({ target: shellCurrent, button: 0, preventDefault() {}, stopPropagation() {} });
+shellPage.flush();
+assert.equal(shellPage.frames()[0].src, shellCurrent.href, "handoff後も未割当会話の通常クリックで画面1を変更する");
+assert.equal(shellCurrent.dataset.chatgptSplitPane, "1", "handoff後のクリックで番号も更新する");
+assert.equal(shellNext.dataset.chatgptSplitPane, undefined, "handoff後のクリックで旧会話の番号を消す");
+shellPage.close();
 const swapPage = page("https://chatgpt.com/c/swap-first");
 swapPage.message({ type: "toggle-four-view", url: "https://chatgpt.com/c/swap-first" });
 swapPage.message({ type: "assign-conversation", url: "https://chatgpt.com/c/swap-second", pane: 2, pageUrl: "https://chatgpt.com/c/swap-first" });
@@ -514,6 +550,69 @@ builtinPage.frames()[0].listeners.get("load")();
 builtinPage.flush();
 assert.equal(scheduleItem.querySelector(".chatgpt-split-page-badges").getAttribute("data-numbers"), "1", "通常クリックの実URLからスケジュールの番号を付ける");
 const builtinDots = builtinPage.document.body.descendants().find(item => item.className === "chatgpt-split-general-options");
+const generalMenuOf = () => builtinPage.document.body.descendants().find(item => item.className === "chatgpt-split-general-menu");
+const pressDots = button => {
+  builtinPage.pointer({ target: button, button: 0 });
+  button.listeners.get("click")({ preventDefault() {}, stopPropagation() {} });
+};
+pressDots(builtinDots);
+assert.ok(generalMenuOf(), "pointerdown→clickで三点メニューを開く");
+pressDots(builtinDots);
+assert.equal(generalMenuOf(), undefined, "同じ三点を再クリックすると閉じる");
+pressDots(builtinDots);
+assert.ok(generalMenuOf(), "閉じた三点を再度開ける");
+const alternateItem = builtinPage.document.createElement("button");
+alternateItem.setAttribute("data-sidebar-destination", "builtin:library");
+alternateItem.textContent = "ライブラリ";
+builtinNav.append(alternateItem);
+builtinPage.mutate(); builtinPage.flush();
+const alternateDots = builtinPage.document.body.descendants().filter(item => item.className === "chatgpt-split-general-options").find(item => item !== builtinDots);
+pressDots(alternateDots);
+assert.ok(generalMenuOf(), "別の三点へpointerdown→clickで切り替える");
+assert.equal(builtinPage.document.body.descendants().filter(item => item.className === "chatgpt-split-general-menu").length, 1);
+generalMenuOf().children[2].listeners.get("click")();
+assert.equal(builtinPage.frames()[1].src, "https://chatgpt.com/library", "切替先の割当操作を維持する");
+assert.equal(generalMenuOf(), undefined, "割当後にメニューを閉じる");
+alternateItem.remove(); builtinPage.mutate(); builtinPage.flush();
+const workLink = builtinPage.document.createElement("a");
+workLink.href = "https://chatgpt.com/local/work-uuid";
+workLink.textContent = "Work";
+builtinNav.append(workLink);
+builtinPage.message({ type: "assign-page", url: workLink.href, pane: 2 });
+builtinPage.flush();
+assert.equal(workLink.querySelector(".chatgpt-split-page-badges"), null, "Work項目に画面番号を追加しない");
+assert.equal(builtinPage.document.body.descendants().filter(item => item.className === "chatgpt-split-general-options").length, 1, "Work項目に追加三点を表示しない");
+let workPrevented = false;
+builtinPage.click({ target: workLink, button: 0, preventDefault() { workPrevented = true; }, stopPropagation() {} });
+builtinPage.contextMenu({ target: workLink, preventDefault() { workPrevented = true; } });
+assert.equal(workPrevented, false, "Workの通常クリックと右クリックをnativeのまま保持する");
+const headingHome = builtinPage.document.createElement("a");
+headingHome.href = "https://chatgpt.com/";
+headingHome.className = "button-link border-0 p-0";
+headingHome.setAttribute("aria-label", "ホーム");
+headingHome.textContent = "ChatGPT";
+builtinNav.append(headingHome);
+builtinPage.message({ type: "assign-page", url: headingHome.href, pane: 2 });
+builtinPage.flush();
+assert.equal(headingHome.querySelector(".chatgpt-split-page-badges"), null, "見出しのホームリンクに画面番号を追加しない");
+assert.equal(builtinPage.document.body.descendants().filter(item => item.className === "chatgpt-split-general-options").length, 1, "見出しのホームリンクに三点を追加しない");
+let headingPrevented = false;
+builtinPage.click({ target: headingHome, button: 0, preventDefault() { headingPrevented = true; }, stopPropagation() {} });
+assert.equal(headingPrevented, false, "見出しホームの本来の移動を分割割当で捕捉しない");
+builtinPage.contextMenu({ target: headingHome, preventDefault() { headingPrevented = true; } });
+assert.equal(headingPrevented, false, "見出しホームの右クリックを分割メニューで捕捉しない");
+assert.equal(builtinDots.hidden, false, "幅のある従来項目には三点を表示する");
+builtinDots.listeners.get("click")({ preventDefault() {}, stopPropagation() {} });
+assert.ok(builtinPage.document.body.descendants().some(item => item.className === "chatgpt-split-general-menu"));
+scheduleItem.setAttribute("data-uniform", "");
+scheduleItem.setAttribute("data-size", "xl");
+scheduleItem.getBoundingClientRect = () => ({ left: 8, right: 44, top: 80, bottom: 116, width: 36, height: 36 });
+builtinPage.mutate(); builtinPage.flush();
+assert.equal(builtinDots.hidden, true, "36pxのナビゲーションアイコンを三点で覆わない");
+assert.equal(builtinPage.document.body.descendants().some(item => item.className === "chatgpt-split-general-menu"), false, "縮小でアンカーが消えたメニューを閉じる");
+scheduleItem.getBoundingClientRect = () => ({ left: 8, right: 268, top: 80, bottom: 116, width: 260, height: 36 });
+builtinPage.resize(); builtinPage.flush();
+assert.equal(builtinDots.hidden, false, "項目の幅が戻ったら同じ三点ボタンを再表示する");
 scheduleItem.click = () => { throw new Error("既知URLならnative操作を再実行しない"); };
 for (const number of [2, 3, 4]) {
   builtinDots.listeners.get("click")({ preventDefault() {}, stopPropagation() {} });
@@ -584,13 +683,17 @@ function childDocument(inMain = false) {
     return { style, closest: selector => selector === "main, [role='main']" && inMain ? {} : null };
   }
   const panel = side();
-  const doc = { querySelector: selector => selector === "#app-shell-sidebar" ? root : null };
-  return { doc, panel, writes: () => writes,
+  const styles = [];
+  const doc = { querySelector: selector => selector === "#app-shell-sidebar" ? root : selector === "#chatgpt-split-thread-width" ? styles[0] || null : null,
+    createElement: () => ({}), documentElement: { append(style) { styles.push(style); } } };
+  return { doc, panel, styles, writes: () => writes,
     insert() { root = side(); root.closest = selector => selector === "aside[data-app-shell-left-panel-appearance]" ? panel : selector === "main, [role='main']" && inMain ? {} : null; return root; } };
 }
 const firstChild = childDocument();
 frame.contentDocument = firstChild.doc;
 frame.listeners.get("load")();
+assert.equal(firstChild.styles.length, 1, "親fallbackでもsplit子documentに本文幅CSSを追加する");
+assert.equal(firstChild.styles[0].textContent, '[data-app-shell-sidebar-open] { --app-shell-navigation-rail-width: 0px !important; }');
 const childObserver = parentHides.mutationObservers.find(item => item.target === firstChild.doc);
 assert.ok(childObserver?.active, "sidebarの遅延挿入を親側から監視する");
 const childRoot = firstChild.insert();
@@ -598,6 +701,10 @@ childObserver.callback();
 assert.equal(firstChild.writes(), 2, "子documentのsidebar本体とasideだけを隠す");
 childObserver.callback();
 assert.equal(firstChild.writes(), 2, "自己mutationで書き込みループしない");
+assert.equal(firstChild.styles.length, 1, "親fallbackは本文幅CSSを重複注入しない");
+firstChild.styles[0].textContent = "old max-width override";
+childObserver.callback();
+assert.equal(firstChild.styles[0].textContent, '[data-app-shell-sidebar-open] { --app-shell-navigation-rail-width: 0px !important; }', "親fallbackも旧本文幅CSSを置換する");
 childRoot.style.value = "block";
 childObserver.callback();
 assert.equal(childRoot.style.value, "none", "再描画で戻ったsidebarを再適用する");
@@ -639,7 +746,7 @@ const originalSrc = oldFrames.map(frame => frame.src);
 const originalSrcWrites = oldFrames.map(frame => frame.srcWrites);
 const frameParents = oldFrames.map(frame => frame.parentElement);
 const originalFrameRemove = oldFrames.map(frame => frame.removeWrites);
-recovery.reinject(source.replace('const controllerVersion = "0.25.0"', 'const controllerVersion = "0.25.1"'));
+recovery.reinject(source.replace('const controllerVersion = "0.28.0"', 'const controllerVersion = "0.28.1"'));
 assert.equal(recovery.host(), oldHost, "更新handoffでhostを置換しない");
 assert.equal(recovery.frames()[0], oldFrames[0], "更新handoffでiframeを移動・置換しない");
 assert.deepEqual(recovery.frames().map(frame => frame.src), originalSrc, "更新復旧でiframe URLを変更しない");
@@ -652,7 +759,7 @@ recovery.message({ type: "controller-alive" }, null, value => { response = value
 assert.equal(response.alive, true, "alive probeは復旧状態を消費しない");
 recovery.message({ type: "recover-split-controller" }, null, value => { response = value; });
 assert.equal(response?.recovered, true, "復旧クリックはtoggleを実行しない");
-recovery.reinject(source.replace('const controllerVersion = "0.25.0"', 'const controllerVersion = "0.25.1"'), true);
+recovery.reinject(source.replace('const controllerVersion = "0.28.0"', 'const controllerVersion = "0.28.1"'), true);
 recovery.message({ type: "recover-split-controller" }, null, value => { response = value; });
 assert.equal(response.recovered, true, "同版flagを解除した再注入でも停止ack後に復旧する");
 assert.equal(recovery.frames()[0], oldFrames[0]);
@@ -689,7 +796,7 @@ const frames = legacyRecovery.frames();
 const writes = frames.map(frame => frame.srcWrites);
 host.removeAttribute("data-controller-protocol");
 legacyRecovery.launcher().removeAttribute("data-controller-protocol");
-legacyRecovery.reinject(source.replace('const controllerVersion = "0.25.0"', 'const controllerVersion = "0.25.1"'));
+legacyRecovery.reinject(source.replace('const controllerVersion = "0.28.0"', 'const controllerVersion = "0.28.1"'));
 let response;
 legacyRecovery.message({ type: "recover-split-controller" }, null, value => { response = value; });
 assert.equal(response.legacy, true, "hookのない旧DOMでは安全な手動移行を要求する");
@@ -748,7 +855,7 @@ const grid = handoffDrag.host().shadowRoot.querySelector(".grid");
 const handle = handoffDrag.host().shadowRoot.querySelector(".resize-handle.x");
 handle.listeners.get("pointerdown")({ preventDefault() {}, pointerId: 1 });
 handle.listeners.get("pointermove")({ pointerId: 1, clientX: 560, clientY: 0 });
-handoffDrag.reinject(source.replace('const controllerVersion = "0.25.0"', 'const controllerVersion = "0.25.1"'));
+handoffDrag.reinject(source.replace('const controllerVersion = "0.28.0"', 'const controllerVersion = "0.28.1"'));
 assert.equal(grid.style["--split-x"], "70%", "detach時は保留中の最新geometryをhandoffへ反映する");
 assert.equal(handle.listeners.has("pointermove"), false);
 const writes = handoffDrag.stateWrites();
@@ -788,7 +895,7 @@ actualLibrary.message({ type: "show-split-diagnostics" });
 const diagnosticDialog = actualLibrary.document.body.descendants().find(item => item.id === "chatgpt-split-diagnostics");
 assert.ok(diagnosticDialog);
 const diagnosticData = JSON.parse(diagnosticDialog.children[1].textContent);
-assert.equal(diagnosticData.version, "0.25.0");
+assert.equal(diagnosticData.version, "0.28.0");
 assert.equal(diagnosticDialog.children[1].textContent.includes("https://"), false);
 diagnosticDialog.children[0].listeners.get("click")();
 actualLibrary.close();

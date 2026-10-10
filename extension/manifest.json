@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Multiview",
-  "version": "0.25.0",
+  "version": "0.28.0",
   "description": "ChatGPTの標準サイドバーを残し、右側に2～4画面を表示します。",
   "permissions": ["storage", "activeTab", "scripting", "contextMenus"],
+  "host_permissions": ["https://chatgpt.com/*"],
   "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
   "action": {
     "default_title": "ChatGPTを分割表示",
